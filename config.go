@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -11,10 +12,24 @@ type Config struct {
 	Quality map[string]string `toml:"quality"`
 }
 
+const defaultConfig = `port = 13771
+
+[quality]
+source = "passthrough"
+high = "8000k"
+mid = "3000k"
+low = "1000k"
+`
+
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(path, []byte(defaultConfig), 0644); err != nil {
+			return cfg, err
+		}
+		data = []byte(defaultConfig)
+	} else if err != nil {
 		return cfg, err
 	}
 	if err := toml.Unmarshal(data, &cfg); err != nil {
@@ -22,7 +37,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	if cfg.Port == 0 {
-		cfg.Port = 8080
+		cfg.Port = 13771
 	}
 	if cfg.Quality == nil {
 		cfg.Quality = make(map[string]string)

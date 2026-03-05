@@ -167,7 +167,14 @@ func main() {
 		posMu         sync.Mutex
 		seekCooldown  = 100 * time.Millisecond
 		seekThreshold = 0.5
+		wsMu          sync.Mutex
 	)
+
+	wsWrite := func(data []byte) error {
+		wsMu.Lock()
+		defer wsMu.Unlock()
+		return ws.WriteMessage(websocket.TextMessage, data)
+	}
 
 	// WS -> IPC goroutine
 	go func() {
@@ -183,15 +190,18 @@ func main() {
 				continue
 			}
 
-			atomic.AddInt32(&applyingCount, 1)
-
 			switch msg.Event {
 			case "seek":
+				atomic.AddInt32(&applyingCount, 1)
 				posMu.Lock()
 				lastSeekPos = msg.Pos
 				posMu.Unlock()
 				ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+				time.AfterFunc(200*time.Millisecond, func() {
+					atomic.AddInt32(&applyingCount, -1)
+				})
 			case "pause":
+				atomic.AddInt32(&applyingCount, 1)
 				if msg.State != nil {
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","pause",%v]}`, *msg.State))
 				}
@@ -201,23 +211,25 @@ func main() {
 					posMu.Unlock()
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
 				}
+				time.AfterFunc(200*time.Millisecond, func() {
+					atomic.AddInt32(&applyingCount, -1)
+				})
 			case "sync":
 				// Compare remote position with local, seek if drift > 1s
 				posMu.Lock()
 				localPos := lastSeekPos
 				posMu.Unlock()
 				if math.Abs(msg.Pos-localPos) > 1.0 {
+					atomic.AddInt32(&applyingCount, 1)
 					posMu.Lock()
 					lastSeekPos = msg.Pos
 					posMu.Unlock()
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+					time.AfterFunc(200*time.Millisecond, func() {
+						atomic.AddInt32(&applyingCount, -1)
+					})
 				}
 			}
-
-			// Small delay to let MPV process the command before decrementing
-			time.AfterFunc(200*time.Millisecond, func() {
-				atomic.AddInt32(&applyingCount, -1)
-			})
 		}
 	}()
 
@@ -236,7 +248,7 @@ func main() {
 					Source: *name,
 				}
 				data, _ := json.Marshal(msg)
-				ws.WriteMessage(websocket.TextMessage, data)
+				wsWrite(data)
 			}
 		}
 	}()
@@ -278,7 +290,7 @@ func main() {
 				Source: *name,
 			}
 			data, _ := json.Marshal(msg)
-			ws.WriteMessage(websocket.TextMessage, data)
+			wsWrite(data)
 
 		case "time-pos":
 			pos, ok := event["data"].(float64)
@@ -299,7 +311,7 @@ func main() {
 					Source: *name,
 				}
 				data, _ := json.Marshal(msg)
-				ws.WriteMessage(websocket.TextMessage, data)
+				wsWrite(data)
 			} else {
 				lastSeekPos = pos
 				posMu.Unlock()

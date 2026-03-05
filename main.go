@@ -90,7 +90,7 @@ func main() {
 	if err != nil {
 		log.Printf("warning: could not load config (%v), using defaults", err)
 		cfg = Config{
-			Port: 8080,
+			Port: 13771,
 			Quality: map[string]string{
 				"source": "passthrough",
 				"high":   "8000k",
