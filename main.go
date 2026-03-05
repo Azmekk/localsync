@@ -48,8 +48,16 @@ func SyncHandler(hub *Hub) http.HandlerFunc {
 	}
 }
 
+func defaultConfigPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "config.toml"
+	}
+	return filepath.Join(filepath.Dir(exe), "config.toml")
+}
+
 func main() {
-	configPath := flag.String("config", "config.toml", "path to config.toml")
+	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
 	filePath := flag.String("file", "", "absolute path to video file (required)")
 	quality := flag.String("quality", "source", "quality preset: source|high|mid|low")
 	showVersion := flag.Bool("version", false, "print version and exit")
