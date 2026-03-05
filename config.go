@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
@@ -26,6 +27,9 @@ func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return cfg, err
+		}
 		if err := os.WriteFile(path, []byte(defaultConfig), 0644); err != nil {
 			return cfg, err
 		}

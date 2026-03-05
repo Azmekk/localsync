@@ -79,14 +79,13 @@ irm https://raw.githubusercontent.com/Azmekk/localsync/master/install.ps1 | iex
 
 ## Configuration
 
-A `config.toml` file is created automatically next to the executable on first run. You can also specify a custom path with `-config`.
+A `config.toml` file is created automatically in your OS config directory on first run. You can also specify a custom path with `-config`.
 
-Default config location by OS:
-
-| OS | Path |
+| OS | Default path |
 |----|------|
-| **Windows** | `%LOCALAPPDATA%\localsync\config.toml` |
-| **macOS / Linux** | `/usr/local/bin/config.toml` |
+| **Windows** | `%APPDATA%\localsync\config.toml` |
+| **macOS** | `~/Library/Application Support/localsync/config.toml` |
+| **Linux** | `~/.config/localsync/config.toml` |
 
 ```toml
 port = 13771

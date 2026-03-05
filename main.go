@@ -53,11 +53,11 @@ func SyncHandler(hub *Hub) http.HandlerFunc {
 }
 
 func defaultConfigPath() string {
-	exe, err := os.Executable()
+	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "config.toml"
 	}
-	return filepath.Join(filepath.Dir(exe), "config.toml")
+	return filepath.Join(dir, "localsync", "config.toml")
 }
 
 func main() {
