@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"localsync/internal/update"
 )
 
 type InitMessage struct {
@@ -40,7 +42,24 @@ func main() {
 	ipcPath := flag.String("ipc", defaultIPCPath(), "path for MPV IPC socket")
 	name := flag.String("name", "client", "identifier sent with sync events")
 	noLaunch := flag.Bool("no-launch", false, "skip launching MPV (used by host)")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	doUpdate := flag.Bool("update", false, "update localsync and syncclient to the latest release")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("syncclient %s\n", update.Version)
+		return
+	}
+
+	if *doUpdate {
+		if err := update.SelfUpdate("syncclient"); err != nil {
+			fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	updateCh := update.StartBackgroundCheck()
 
 	if *server == "" {
 		fmt.Fprintln(os.Stderr, "error: --server flag is required")
@@ -74,6 +93,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer ws.Close()
+	// Drain background update check (wait up to 2s)
+	select {
+	case info := <-updateCh:
+		if info != nil {
+			update.PrintUpdateBanner(info)
+		}
+	case <-time.After(2 * time.Second):
+	}
+
 	log.Println("connected to server")
 
 	// Wait for init message

@@ -37,13 +37,13 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o localsync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} .
+        run: go build -ldflags "-s -w -X localsync/internal/update.Version=${{ github.ref_name }}" -o localsync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} .
 
       - name: Build client
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o syncclient-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/syncclient
+        run: go build -ldflags "-s -w -X localsync/internal/update.Version=${{ github.ref_name }}" -o syncclient-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/syncclient
 
       - uses: actions/upload-artifact@v4
         with:

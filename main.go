@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/gorilla/websocket"
+
+	"localsync/internal/update"
 )
 
 var upgrader = websocket.Upgrader{
@@ -41,7 +44,24 @@ func main() {
 	configPath := flag.String("config", "config.toml", "path to config.toml")
 	filePath := flag.String("file", "", "absolute path to video file (required)")
 	quality := flag.String("quality", "source", "quality preset: source|high|mid|low")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	doUpdate := flag.Bool("update", false, "update localsync and syncclient to the latest release")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("localsync %s\n", update.Version)
+		return
+	}
+
+	if *doUpdate {
+		if err := update.SelfUpdate("localsync"); err != nil {
+			fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	updateCh := update.StartBackgroundCheck()
 
 	if *filePath == "" {
 		fmt.Fprintln(os.Stderr, "error: -file flag is required")
@@ -98,11 +118,20 @@ func main() {
 	http.HandleFunc("/stream", StreamHandler(cfg, absFile))
 	http.HandleFunc("/ws", SyncHandler(hub))
 
+	// Drain background update check (wait up to 2s)
+	select {
+	case info := <-updateCh:
+		if info != nil {
+			update.PrintUpdateBanner(info)
+		}
+	case <-time.After(2 * time.Second):
+	}
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, *quality)
 	wsURL := fmt.Sprintf("ws://0.0.0.0:%d/ws", cfg.Port)
 
-	fmt.Printf("LocalSync running on %s\n", addr)
+	fmt.Printf("LocalSync %s running on %s\n", update.Version, addr)
 	fmt.Printf("Now playing: %s\n", absFile)
 	fmt.Printf("Quality:     %s\n", *quality)
 	fmt.Printf("Stream:      %s\n", streamURL)
