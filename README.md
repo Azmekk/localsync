@@ -2,11 +2,14 @@
 
 Sync video playback between two MPV instances over a local network. Host picks a file, client connects and gets MPV launched automatically. Pause/seek/resume syncs in real time.
 
-Requires MPV and FFmpeg (for transcoding). See [Prerequisites](#prerequisites) for install instructions.
+## Install
 
-## Prerequisites
+> **You need [MPV](https://mpv.io) and [FFmpeg](https://ffmpeg.org) installed first.** See Step 1 below.
 
-### macOS
+### Step 1: Install MPV & FFmpeg
+
+<details>
+<summary><b>macOS</b></summary>
 
 ```bash
 # Install Homebrew if you don't have it
@@ -15,7 +18,10 @@ Requires MPV and FFmpeg (for transcoding). See [Prerequisites](#prerequisites) f
 brew install mpv ffmpeg
 ```
 
-### Linux
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
 
 ```bash
 # Debian / Ubuntu
@@ -32,22 +38,26 @@ sudo pacman -S mpv ffmpeg
 brew install mpv ffmpeg
 ```
 
-### Windows
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
 
 ```powershell
-# Install Homebrew (requires WSL — or use the native options below)
-# Native option 1: winget (preinstalled on Windows 11; on Windows 10, install "App Installer" from the Microsoft Store)
+# winget (preinstalled on Windows 11; on Windows 10, install "App Installer" from the Microsoft Store)
 winget install mpv ffmpeg
 
-# Native option 2: Chocolatey (https://chocolatey.org/install)
+# Chocolatey (https://chocolatey.org/install)
 choco install mpv ffmpeg
 
-# Native option 3: Scoop (https://scoop.sh)
+# Scoop (https://scoop.sh)
 scoop bucket add extras
 scoop install mpv ffmpeg
 ```
 
-## Install
+</details>
+
+### Step 2: Install LocalSync
 
 ```bash
 # Unix (Linux / macOS)
