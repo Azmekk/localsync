@@ -2,9 +2,21 @@
 
 Sync video playback between two MPV instances over a local network. Host picks a file, client connects and gets MPV launched automatically. Pause/seek/resume syncs in real time.
 
-Requires Go 1.21+, MPV, and FFmpeg (for transcoding).
+Requires MPV and FFmpeg (for transcoding).
 
-## Build
+## Install
+
+```bash
+# Unix (Linux / macOS)
+curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/Azmekk/localsync/master/install.ps1 | iex
+```
+
+## Build (from source)
+
+Requires Go 1.21+.
 
 ```bash
 go build -o localsync .
