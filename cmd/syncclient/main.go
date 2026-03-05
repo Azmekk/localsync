@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -132,12 +133,12 @@ func main() {
 	ipcWrite(ipcConn, `{"command":["observe_property",2,"time-pos"]}`)
 
 	var (
-		applyingRemote sync.Mutex
-		isApplying     bool
-		lastSeekTime   time.Time
-		lastSeekPos    float64
-		seekCooldown   = 500 * time.Millisecond
-		seekThreshold  = 2.0
+		applyingCount int32
+		lastSeekTime  time.Time
+		lastSeekPos   float64
+		posMu         sync.Mutex
+		seekCooldown  = 100 * time.Millisecond
+		seekThreshold = 0.5
 	)
 
 	// WS -> IPC goroutine
@@ -154,25 +155,61 @@ func main() {
 				continue
 			}
 
-			applyingRemote.Lock()
-			isApplying = true
-			applyingRemote.Unlock()
+			atomic.AddInt32(&applyingCount, 1)
 
 			switch msg.Event {
 			case "seek":
+				posMu.Lock()
+				lastSeekPos = msg.Pos
+				posMu.Unlock()
 				ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
 			case "pause":
 				if msg.State != nil {
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","pause",%v]}`, *msg.State))
 				}
+				if msg.Pos > 0 {
+					posMu.Lock()
+					lastSeekPos = msg.Pos
+					posMu.Unlock()
+					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+				}
+			case "sync":
+				// Compare remote position with local, seek if drift > 1s
+				posMu.Lock()
+				localPos := lastSeekPos
+				posMu.Unlock()
+				if math.Abs(msg.Pos-localPos) > 1.0 {
+					posMu.Lock()
+					lastSeekPos = msg.Pos
+					posMu.Unlock()
+					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+				}
 			}
 
-			// Small delay to let MPV process the command before clearing the flag
+			// Small delay to let MPV process the command before decrementing
 			time.AfterFunc(200*time.Millisecond, func() {
-				applyingRemote.Lock()
-				isApplying = false
-				applyingRemote.Unlock()
+				atomic.AddInt32(&applyingCount, -1)
 			})
+		}
+	}()
+
+	// Periodic position sync (drift safety net)
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			posMu.Lock()
+			pos := lastSeekPos
+			posMu.Unlock()
+			if pos > 0 {
+				msg := SyncMessage{
+					Event:  "sync",
+					Pos:    pos,
+					Source: *name,
+				}
+				data, _ := json.Marshal(msg)
+				ws.WriteMessage(websocket.TextMessage, data)
+			}
 		}
 	}()
 
@@ -191,10 +228,7 @@ func main() {
 			continue
 		}
 
-		applyingRemote.Lock()
-		applying := isApplying
-		applyingRemote.Unlock()
-		if applying {
+		if atomic.LoadInt32(&applyingCount) > 0 {
 			continue
 		}
 
@@ -206,7 +240,9 @@ func main() {
 				continue
 			}
 			// Get current position
+			posMu.Lock()
 			pos := lastSeekPos
+			posMu.Unlock()
 			msg := SyncMessage{
 				Event:  "pause",
 				State:  &paused,
@@ -223,10 +259,12 @@ func main() {
 			}
 
 			now := time.Now()
+			posMu.Lock()
 			diff := math.Abs(pos - lastSeekPos)
 			if diff > seekThreshold && now.Sub(lastSeekTime) > seekCooldown {
 				lastSeekTime = now
 				lastSeekPos = pos
+				posMu.Unlock()
 				msg := SyncMessage{
 					Event:  "seek",
 					Pos:    pos,
@@ -236,6 +274,7 @@ func main() {
 				ws.WriteMessage(websocket.TextMessage, data)
 			} else {
 				lastSeekPos = pos
+				posMu.Unlock()
 			}
 		}
 	}

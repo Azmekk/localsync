@@ -112,5 +112,9 @@ func (h *Hub) UpdateState(msg []byte) {
 		if pos, ok := raw["pos"].(float64); ok {
 			h.state.Pos = pos
 		}
+	case "sync":
+		if pos, ok := raw["pos"].(float64); ok {
+			h.state.Pos = pos
+		}
 	}
 }
