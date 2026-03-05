@@ -74,7 +74,7 @@ irm https://raw.githubusercontent.com/Azmekk/localsync/master/install.ps1 | iex
 ./localsync -file /path/to/movie.mkv
 
 # Client
-./syncclient --server ws://<host-ip>:8080/ws
+./syncclient --server ws://<host-ip>:13771/ws
 ```
 
 ## Configuration
