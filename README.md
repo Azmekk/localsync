@@ -67,13 +67,14 @@ curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh 
 irm https://raw.githubusercontent.com/Azmekk/localsync/master/install.ps1 | iex
 ```
 
-## Build (from source)
-
-Requires Go 1.21+.
+## Usage
 
 ```bash
-go build -o localsync .
-go build -o syncclient ./cmd/syncclient
+# Host
+./localsync -file /path/to/movie.mkv
+
+# Client
+./syncclient --server ws://<host-ip>:8080/ws
 ```
 
 ## Configuration
@@ -107,12 +108,11 @@ low = "1000k"
 | `max_clients` | `1` | Max simultaneous remote viewers (`0` = unlimited) |
 | `quality.*` | see above | Named quality presets — `source` streams the file directly, others transcode via FFmpeg at the given bitrate |
 
-## Usage
+## Build (from source)
+
+Requires Go 1.21+.
 
 ```bash
-# Host
-./localsync -file /path/to/movie.mkv
-
-# Client
-./syncclient --server ws://<host-ip>:8080/ws
+go build -o localsync .
+go build -o syncclient ./cmd/syncclient
 ```
