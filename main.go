@@ -1,0 +1,161 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/gorilla/websocket"
+)
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func SyncHandler(hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("websocket upgrade failed: %v", err)
+			return
+		}
+		hub.Register(conn)
+		defer hub.Unregister(conn)
+
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			hub.UpdateState(msg)
+			hub.Broadcast(conn, msg)
+		}
+	}
+}
+
+func main() {
+	configPath := flag.String("config", "config.toml", "path to config.toml")
+	filePath := flag.String("file", "", "absolute path to video file (required)")
+	quality := flag.String("quality", "source", "quality preset: source|high|mid|low")
+	flag.Parse()
+
+	if *filePath == "" {
+		fmt.Fprintln(os.Stderr, "error: -file flag is required")
+		os.Exit(1)
+	}
+
+	absFile, err := filepath.Abs(*filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot resolve file path: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := os.Stat(absFile); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "error: file not found: %s\n", absFile)
+		os.Exit(1)
+	}
+
+	if *quality != "source" {
+		if _, err := exec.LookPath("ffmpeg"); err != nil {
+			fmt.Fprintln(os.Stderr, "error: ffmpeg not found on PATH (required for transcoding)")
+			os.Exit(1)
+		}
+	}
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		log.Printf("warning: could not load config (%v), using defaults", err)
+		cfg = Config{
+			Port: 8080,
+			Quality: map[string]string{
+				"source": "passthrough",
+				"high":   "8000k",
+				"mid":    "3000k",
+				"low":    "1000k",
+			},
+		}
+	}
+
+	if _, ok := cfg.Quality[*quality]; !ok {
+		fmt.Fprintf(os.Stderr, "error: unknown quality preset: %s\n", *quality)
+		os.Exit(1)
+	}
+
+	initialState := SessionState{
+		File:    filepath.Base(absFile),
+		Quality: *quality,
+		Pos:     0,
+		Paused:  false,
+	}
+
+	hub := NewHub(initialState)
+	go hub.Run()
+
+	http.HandleFunc("/stream", StreamHandler(cfg, absFile))
+	http.HandleFunc("/ws", SyncHandler(hub))
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, *quality)
+	wsURL := fmt.Sprintf("ws://0.0.0.0:%d/ws", cfg.Port)
+
+	fmt.Printf("LocalSync running on %s\n", addr)
+	fmt.Printf("Now playing: %s\n", absFile)
+	fmt.Printf("Quality:     %s\n", *quality)
+	fmt.Printf("Stream:      %s\n", streamURL)
+	fmt.Printf("Sync WS:     %s\n", wsURL)
+	fmt.Println()
+	fmt.Println("Waiting for client to connect...")
+
+	// Launch host MPV
+	go launchHostMPV(cfg.Port, *quality, absFile)
+
+	log.Fatal(http.ListenAndServe(addr, nil))
+}
+
+func launchHostMPV(port int, quality string, filePath string) {
+	ipcPath := getHostIPCPath()
+	streamURL := fmt.Sprintf("http://localhost:%d/stream?quality=%s", port, quality)
+
+	mpvCmd := exec.Command("mpv",
+		fmt.Sprintf("--input-ipc-server=%s", ipcPath),
+		streamURL,
+	)
+	mpvCmd.Stdout = os.Stdout
+	mpvCmd.Stderr = os.Stderr
+
+	if err := mpvCmd.Start(); err != nil {
+		log.Printf("warning: could not launch host MPV: %v", err)
+		return
+	}
+
+	// Launch syncclient in-process style via subprocess
+	wsURL := fmt.Sprintf("ws://localhost:%d/ws", port)
+	clientCmd := exec.Command(os.Args[0]+"_syncclient_not_used")
+	_ = clientCmd // syncclient is a separate binary; host uses direct WS
+
+	// Instead, run the syncclient binary if available, or just connect via WS
+	syncClient := exec.Command("syncclient",
+		"--server", wsURL,
+		"--ipc", ipcPath,
+		"--name", "host",
+		"--no-launch",
+	)
+	syncClient.Stdout = os.Stdout
+	syncClient.Stderr = os.Stderr
+	if err := syncClient.Start(); err != nil {
+		log.Printf("note: syncclient not found, host sync not active. Build syncclient and add to PATH for host-side sync.")
+	}
+
+	mpvCmd.Wait()
+}
+
+func getHostIPCPath() string {
+	if os.PathSeparator == '\\' {
+		return `\\.\pipe\mpvsync-host`
+	}
+	return "/tmp/mpvsync-host"
+}
