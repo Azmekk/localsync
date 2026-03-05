@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +34,13 @@ func SyncHandler(hub *Hub) http.HandlerFunc {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				break
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal(msg, &raw); err == nil {
+				source, _ := raw["source"].(string)
+				if source != "host" {
+					continue
+				}
 			}
 			hub.UpdateState(msg)
 			hub.Broadcast(conn, msg)

@@ -233,88 +233,112 @@ func main() {
 		}
 	}()
 
-	// Periodic position sync (drift safety net)
-	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			posMu.Lock()
-			pos := lastSeekPos
-			posMu.Unlock()
-			if pos > 0 {
+	// IPC event loop: track local position for drift correction (host-only control)
+	if *name == "host" {
+		// Host: send periodic sync and forward IPC events to WS
+		go func() {
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				posMu.Lock()
+				pos := lastSeekPos
+				posMu.Unlock()
+				if pos > 0 {
+					msg := SyncMessage{
+						Event:  "sync",
+						Pos:    pos,
+						Source: *name,
+					}
+					data, _ := json.Marshal(msg)
+					wsWrite(data)
+				}
+			}
+		}()
+
+		scanner := bufio.NewScanner(ipcConn)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			if event["event"] != "property-change" {
+				continue
+			}
+
+			if ac := atomic.LoadInt32(&applyingCount); ac > 0 {
+				continue
+			}
+
+			propName, _ := event["name"].(string)
+			switch propName {
+			case "pause":
+				paused, ok := event["data"].(bool)
+				if !ok {
+					continue
+				}
+				posMu.Lock()
+				pos := lastSeekPos
+				posMu.Unlock()
 				msg := SyncMessage{
-					Event:  "sync",
+					Event:  "pause",
+					State:  &paused,
 					Pos:    pos,
 					Source: *name,
 				}
 				data, _ := json.Marshal(msg)
 				wsWrite(data)
-			}
-		}
-	}()
 
-	// IPC -> WS goroutine (runs on main goroutine)
-	scanner := bufio.NewScanner(ipcConn)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-
-		// Only handle property-change events
-		if event["event"] != "property-change" {
-			continue
-		}
-
-		if atomic.LoadInt32(&applyingCount) > 0 {
-			continue
-		}
-
-		propName, _ := event["name"].(string)
-		switch propName {
-		case "pause":
-			paused, ok := event["data"].(bool)
-			if !ok {
-				continue
-			}
-			// Get current position
-			posMu.Lock()
-			pos := lastSeekPos
-			posMu.Unlock()
-			msg := SyncMessage{
-				Event:  "pause",
-				State:  &paused,
-				Pos:    pos,
-				Source: *name,
-			}
-			data, _ := json.Marshal(msg)
-			wsWrite(data)
-
-		case "time-pos":
-			pos, ok := event["data"].(float64)
-			if !ok {
-				continue
-			}
-
-			now := time.Now()
-			posMu.Lock()
-			diff := math.Abs(pos - lastSeekPos)
-			if diff > seekThreshold && now.Sub(lastSeekTime) > seekCooldown {
-				lastSeekTime = now
-				lastSeekPos = pos
-				posMu.Unlock()
-				msg := SyncMessage{
-					Event:  "seek",
-					Pos:    pos,
-					Source: *name,
+			case "time-pos":
+				pos, ok := event["data"].(float64)
+				if !ok {
+					continue
 				}
-				data, _ := json.Marshal(msg)
-				wsWrite(data)
-			} else {
-				lastSeekPos = pos
-				posMu.Unlock()
+
+				now := time.Now()
+				posMu.Lock()
+				diff := math.Abs(pos - lastSeekPos)
+				if diff > seekThreshold && now.Sub(lastSeekTime) > seekCooldown {
+					lastSeekTime = now
+					lastSeekPos = pos
+					posMu.Unlock()
+					msg := SyncMessage{
+						Event:  "seek",
+						Pos:    pos,
+						Source: *name,
+					}
+					data, _ := json.Marshal(msg)
+					wsWrite(data)
+				} else {
+					lastSeekPos = pos
+					posMu.Unlock()
+				}
+			}
+		}
+	} else {
+		// Client: only track local position, never send to WS
+		scanner := bufio.NewScanner(ipcConn)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			if event["event"] != "property-change" {
+				continue
+			}
+
+			propName, _ := event["name"].(string)
+			if propName == "time-pos" {
+				if pos, ok := event["data"].(float64); ok {
+					posMu.Lock()
+					lastSeekPos = pos
+					posMu.Unlock()
+				}
 			}
 		}
 	}
@@ -357,3 +381,4 @@ func ipcWrite(conn net.Conn, msg string) {
 	}
 	conn.Write([]byte(msg))
 }
+
