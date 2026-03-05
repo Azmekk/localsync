@@ -8,20 +8,44 @@ Sync video playback between two MPV instances over a local network. Host picks a
 
 ### Step 1: Install MPV & FFmpeg
 
-<details>
-<summary><b>macOS</b></summary>
+**Windows** — via **winget** (preinstalled on Windows 11; on Windows 10, install "App Installer" from the Microsoft Store):
+
+```powershell
+winget install mpv ffmpeg
+```
+
+Alternatively, you can use [Chocolatey](https://chocolatey.org/install) (separate package manager):
+
+```powershell
+choco install mpv ffmpeg
+```
+
+Or [Scoop](https://scoop.sh) (separate package manager):
+
+```powershell
+scoop bucket add extras
+scoop install mpv ffmpeg
+```
+
+**macOS** — via [Homebrew](https://brew.sh):
 
 ```bash
-# Install Homebrew if you don't have it
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
 brew install mpv ffmpeg
 ```
 
-</details>
+If you don't have Homebrew, install it first:
 
-<details>
-<summary><b>Linux</b></summary>
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Alternatively, you can install via [MacPorts](https://www.macports.org) (separate package manager):
+
+```bash
+sudo port install mpv ffmpeg
+```
+
+**Linux:**
 
 ```bash
 # Debian / Ubuntu
@@ -32,39 +56,20 @@ sudo dnf install mpv ffmpeg
 
 # Arch
 sudo pacman -S mpv ffmpeg
-
-# Or via Homebrew on Linux
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install mpv ffmpeg
 ```
-
-</details>
-
-<details>
-<summary><b>Windows</b></summary>
-
-```powershell
-# winget (preinstalled on Windows 11; on Windows 10, install "App Installer" from the Microsoft Store)
-winget install mpv ffmpeg
-
-# Chocolatey (https://chocolatey.org/install)
-choco install mpv ffmpeg
-
-# Scoop (https://scoop.sh)
-scoop bucket add extras
-scoop install mpv ffmpeg
-```
-
-</details>
 
 ### Step 2: Install LocalSync
 
-```bash
-# Unix (Linux / macOS)
-curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh | sh
+**Windows** (PowerShell):
 
-# Windows (PowerShell)
+```powershell
 irm https://raw.githubusercontent.com/Azmekk/localsync/master/install.ps1 | iex
+```
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh | sh
 ```
 
 ## Usage
