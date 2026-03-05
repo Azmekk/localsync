@@ -21,6 +21,7 @@ type Hub struct {
 	register   chan *websocket.Conn
 	unregister chan *websocket.Conn
 	state      SessionState
+	maxClients int
 	mu         sync.Mutex
 }
 
@@ -29,14 +30,27 @@ type broadcastMsg struct {
 	data   []byte
 }
 
-func NewHub(initialState SessionState) *Hub {
+func NewHub(initialState SessionState, maxClients int) *Hub {
 	return &Hub{
 		clients:    make(map[*websocket.Conn]bool),
 		broadcast:  make(chan broadcastMsg, 256),
 		register:   make(chan *websocket.Conn),
 		unregister: make(chan *websocket.Conn),
 		state:      initialState,
+		maxClients: maxClients,
 	}
+}
+
+// CanRegister reports whether a new remote client can connect.
+// The host's syncclient also connects via WS, so total connections = remote clients + 1.
+// maxClients of 0 means unlimited.
+func (h *Hub) CanRegister() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.maxClients == 0 {
+		return true
+	}
+	return len(h.clients) < h.maxClients+1
 }
 
 func (h *Hub) Run() {

@@ -76,6 +76,37 @@ go build -o localsync .
 go build -o syncclient ./cmd/syncclient
 ```
 
+## Configuration
+
+A `config.toml` file is created automatically next to the executable on first run. You can also specify a custom path with `-config`.
+
+Default config location by OS:
+
+| OS | Path |
+|----|------|
+| **Windows** | `%LOCALAPPDATA%\localsync\config.toml` |
+| **macOS / Linux** | `/usr/local/bin/config.toml` |
+
+```toml
+port = 13771
+
+# Maximum number of remote clients allowed at once.
+# Default is 1. Set to 0 for unlimited.
+max_clients = 1
+
+[quality]
+source = "passthrough"
+high = "8000k"
+mid = "3000k"
+low = "1000k"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `port` | `13771` | HTTP/WebSocket server port |
+| `max_clients` | `1` | Max simultaneous remote viewers (`0` = unlimited) |
+| `quality.*` | see above | Named quality presets — `source` streams the file directly, others transcode via FFmpeg at the given bitrate |
+
 ## Usage
 
 ```bash

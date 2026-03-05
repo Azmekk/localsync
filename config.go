@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	Port    int               `toml:"port"`
-	Quality map[string]string `toml:"quality"`
+	Port       int               `toml:"port"`
+	MaxClients int               `toml:"max_clients"`
+	Quality    map[string]string `toml:"quality"`
 }
 
 const defaultConfig = `port = 13771
@@ -39,6 +40,9 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Port == 0 {
 		cfg.Port = 13771
 	}
+	if cfg.MaxClients == 0 && !hasKey(data, "max_clients") {
+		cfg.MaxClients = 1
+	}
 	if cfg.Quality == nil {
 		cfg.Quality = make(map[string]string)
 	}
@@ -56,4 +60,14 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// hasKey checks whether a TOML key is explicitly present in the raw data.
+func hasKey(data []byte, key string) bool {
+	var raw map[string]interface{}
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw[key]
+	return ok
 }

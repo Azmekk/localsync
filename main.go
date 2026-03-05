@@ -22,6 +22,10 @@ var upgrader = websocket.Upgrader{
 
 func SyncHandler(hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !hub.CanRegister() {
+			http.Error(w, "max clients reached", http.StatusServiceUnavailable)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("websocket upgrade failed: %v", err)
@@ -106,7 +110,8 @@ func main() {
 	if err != nil {
 		log.Printf("warning: could not load config (%v), using defaults", err)
 		cfg = Config{
-			Port: 13771,
+			Port:       13771,
+			MaxClients: 1,
 			Quality: map[string]string{
 				"source": "passthrough",
 				"high":   "8000k",
@@ -128,7 +133,7 @@ func main() {
 		Paused:  false,
 	}
 
-	hub := NewHub(initialState)
+	hub := NewHub(initialState, cfg.MaxClients)
 	go hub.Run()
 
 	http.HandleFunc("/stream", StreamHandler(cfg, absFile))
