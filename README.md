@@ -99,6 +99,15 @@ port = 13771
 # Default is 1. Set to 0 for unlimited.
 max_clients = 1
 
+[transcode]
+video_codec = "libx264"
+extra_args = ["-preset", "ultrafast", "-tune", "zerolatency"]
+audio_codec = "aac"
+audio_bitrate = "128k"
+subtitles = true
+realtime = true
+format = "matroska"
+
 [quality]
 source = "passthrough"
 high = "8000k"
@@ -111,6 +120,95 @@ low = "1000k"
 | `port` | `13771` | HTTP/WebSocket server port |
 | `max_clients` | `1` | Max simultaneous remote viewers (`0` = unlimited) |
 | `quality.*` | see above | Named quality presets — `source` streams the file directly, others transcode via FFmpeg at the given bitrate |
+| `transcode.video_codec` | `libx264` | FFmpeg video codec (e.g. `hevc_nvenc`, `h264_vaapi`) |
+| `transcode.extra_args` | `["-preset", "ultrafast", "-tune", "zerolatency"]` | Additional encoder-specific FFmpeg flags |
+| `transcode.audio_codec` | `aac` | Audio codec — set to `copy` to passthrough original audio |
+| `transcode.audio_bitrate` | `128k` | Audio bitrate (ignored when `audio_codec = "copy"`) |
+| `transcode.subtitles` | `true` | Pass through subtitle streams in transcoded output |
+| `transcode.realtime` | `true` | Enable `-re` (realtime throttling) — disable for hardware encoders that can buffer ahead |
+| `transcode.format` | `matroska` | Container format (`matroska`, `mpegts`, `mp4`, etc.) |
+
+### Hardware encoding examples
+
+<details>
+<summary>NVIDIA RTX 2000 series (Turing)</summary>
+
+Turing NVENC is solid for H.264; it supports HEVC encode too, but H.264 is more broadly compatible. No AV1 support.
+
+```toml
+[transcode]
+video_codec = "h264_nvenc"
+extra_args = ["-preset", "p4", "-tune", "ll", "-rc", "vbr"]
+audio_codec = "copy"
+subtitles = true
+realtime = false
+format = "matroska"
+```
+</details>
+
+<details>
+<summary>NVIDIA RTX 3000 series (Ampere)</summary>
+
+Ampere has improved NVENC with better B-frame support. HEVC is a good default here.
+
+```toml
+[transcode]
+video_codec = "hevc_nvenc"
+extra_args = ["-preset", "p5", "-tune", "ll", "-rc", "vbr"]
+audio_codec = "copy"
+subtitles = true
+realtime = false
+format = "matroska"
+```
+</details>
+
+<details>
+<summary>NVIDIA RTX 4000 series (Ada Lovelace)</summary>
+
+4000 series introduced AV1 hardware encode — best quality/bitrate ratio. Fall back to `hevc_nvenc` if the client doesn't support AV1.
+
+```toml
+[transcode]
+video_codec = "av1_nvenc"
+extra_args = ["-preset", "p4", "-rc", "vbr"]
+audio_codec = "copy"
+subtitles = true
+realtime = false
+format = "matroska"
+```
+</details>
+
+<details>
+<summary>AMD Radeon RX 6000 series (RDNA 2)</summary>
+
+AMF encoding via `h264_amf` or `hevc_amf`. No AV1 encode on RDNA 2.
+
+```toml
+[transcode]
+video_codec = "hevc_amf"
+extra_args = ["-quality", "balanced", "-rc", "vbr_latency"]
+audio_codec = "copy"
+subtitles = true
+realtime = false
+format = "matroska"
+```
+</details>
+
+<details>
+<summary>AMD Radeon RX 7000 series (RDNA 3)</summary>
+
+RDNA 3 added AV1 hardware encode via `av1_amf`. Fall back to `hevc_amf` if needed.
+
+```toml
+[transcode]
+video_codec = "av1_amf"
+extra_args = ["-quality", "balanced", "-rc", "vbr_latency"]
+audio_codec = "copy"
+subtitles = true
+realtime = false
+format = "matroska"
+```
+</details>
 
 ## Build (from source)
 

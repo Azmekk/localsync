@@ -34,8 +34,8 @@ Two separate binaries sharing the `internal/update` package:
 ### Server (`localsync` — root package)
 - **main.go**: CLI flags (`-file`, `-quality`, `-config`), HTTP server setup, launches host MPV + syncclient subprocess. Routes: `/stream` (video) and `/ws` (sync WebSocket).
 - **hub.go**: WebSocket broadcast hub holding `SessionState` (file, quality, pos, paused). Sends `init` event to newly connected clients. Broadcasts sync messages between peers (never echoes back to sender).
-- **stream.go**: HTTP handler serving video. `source` quality = passthrough via `http.ServeContent` (supports Range/seek). Other qualities = FFmpeg transcoding piped to response as MPEG-TS.
-- **config.go**: TOML config loader (`config.toml`) for port and quality presets.
+- **stream.go**: HTTP handler serving video. `source` quality = passthrough via `http.ServeContent` (supports Range/seek). Other qualities = FFmpeg transcoding with configurable codec, audio, subtitle passthrough, and container format (defaults to matroska).
+- **config.go**: TOML config loader (`config.toml`) for port, quality presets, and `TranscodeConfig` (video/audio codec, extra encoder args, subtitle passthrough, realtime throttling, container format).
 
 ### Client (`syncclient` — `cmd/syncclient/`)
 - **main.go**: Connects to host WS, receives `init` message, launches MPV, bridges MPV IPC <-> WebSocket for bidirectional sync. Uses atomic `applyingCount` to prevent echo loops.

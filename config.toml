@@ -1,5 +1,14 @@
 port = 8080
 
+[transcode]
+video_codec = "libx264"
+extra_args = ["-preset", "ultrafast", "-tune", "zerolatency"]
+audio_codec = "aac"
+audio_bitrate = "128k"
+subtitles = true
+realtime = true
+format = "matroska"
+
 [quality]
 source = "passthrough"
 high   = "8000k"
