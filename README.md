@@ -74,13 +74,34 @@ curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh 
 
 ## Usage
 
-```bash
-# Host
-./localsync -file /path/to/movie.mkv
+**Host:**
 
-# Client
+```bash
+./localsync -file /path/to/movie.mkv
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-file` | *(required)* | Path to the video file to play |
+| `-quality` | `source` | Quality preset to use (`source`, `high`, `mid`, `low`, or any custom preset from config) |
+| `-config` | OS config dir | Path to `config.toml` |
+| `-version` | | Print version and exit |
+| `-update` | | Update localsync and syncclient to the latest release |
+
+**Client:**
+
+```bash
 ./syncclient --server ws://<host-ip>:<port>/ws
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | *(required)* | WebSocket URL of the host (`ws://<host-ip>:<port>/ws`) |
+| `--ipc` | `/tmp/mpvsync` (Unix) or `\\.\pipe\mpvsync` (Windows) | Path for the MPV IPC socket |
+| `--name` | `client` | Identifier sent with sync events (`host` or `client`) |
+| `--no-launch` | `false` | Skip launching MPV (used internally by the host) |
+| `--version` | | Print version and exit |
+| `--update` | | Update localsync and syncclient to the latest release |
 
 ## Configuration
 
