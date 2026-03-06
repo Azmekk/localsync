@@ -129,6 +129,9 @@ func main() {
 		mpvArgs := []string{
 			fmt.Sprintf("--input-ipc-server=%s", *ipcPath),
 		}
+		if isTranscoded {
+			mpvArgs = append(mpvArgs, "--force-seekable=yes")
+		}
 		if isTranscoded && initMsg.Pos > 0 {
 			// --start doesn't work on non-seekable transcoded streams; use start param instead
 			launchURL = fmt.Sprintf("%s&start=%.1f", streamBaseURL, initMsg.Pos)
@@ -168,14 +171,16 @@ func main() {
 	ipcWrite(ipcConn, `{"command":["observe_property",2,"time-pos"]}`)
 
 	var (
-		applyingCount  int32
-		waitingForReady int32
-		lastSeekTime   time.Time
-		lastSeekPos    float64
-		posMu          sync.Mutex
-		seekCooldown   = 100 * time.Millisecond
-		seekThreshold  = 0.5
-		wsMu           sync.Mutex
+		applyingCount      int32
+		waitingForReady    int32
+		waitingForRestart  int32
+		restartPauseAfter  int32 // if set, re-pause after playback-restart
+		lastSeekTime       time.Time
+		lastSeekPos        float64
+		posMu              sync.Mutex
+		seekCooldown       = 100 * time.Millisecond
+		seekThreshold      = 0.5
+		wsMu               sync.Mutex
 	)
 
 	wsWrite := func(data []byte) error {
@@ -208,11 +213,17 @@ func main() {
 					// Reload stream at new position for transcoded content
 					loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
-					// Send ready after stream reloads
-					time.AfterFunc(3*time.Second, func() {
-						atomic.AddInt32(&applyingCount, -1)
-						readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
-						wsWrite(readyMsg)
+					// Wait for playback-restart event to signal ready
+					atomic.StoreInt32(&restartPauseAfter, 0)
+					atomic.StoreInt32(&waitingForRestart, 1)
+					// Fallback timeout in case playback-restart never fires
+					time.AfterFunc(10*time.Second, func() {
+						if atomic.CompareAndSwapInt32(&waitingForRestart, 1, 0) {
+							log.Println("playback-restart timeout, sending ready anyway")
+							atomic.AddInt32(&applyingCount, -1)
+							readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
+							wsWrite(readyMsg)
+						}
 					})
 				} else {
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
@@ -237,15 +248,24 @@ func main() {
 					if isTranscoded && *name != "host" {
 						loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
 						ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
+						// Re-pause after restart if needed
 						if msg.State != nil && *msg.State {
-							time.AfterFunc(1*time.Second, func() {
-								ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
-							})
+							atomic.StoreInt32(&restartPauseAfter, 1)
+						} else {
+							atomic.StoreInt32(&restartPauseAfter, 0)
 						}
-						time.AfterFunc(3*time.Second, func() {
-							atomic.AddInt32(&applyingCount, -1)
-							readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
-							wsWrite(readyMsg)
+						atomic.StoreInt32(&waitingForRestart, 1)
+						// Fallback timeout in case playback-restart never fires
+						time.AfterFunc(10*time.Second, func() {
+							if atomic.CompareAndSwapInt32(&waitingForRestart, 1, 0) {
+								log.Println("playback-restart timeout, sending ready anyway")
+								if atomic.LoadInt32(&restartPauseAfter) == 1 {
+									ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+								}
+								atomic.AddInt32(&applyingCount, -1)
+								readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
+								wsWrite(readyMsg)
+							}
 						})
 					} else {
 						ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
@@ -376,7 +396,7 @@ func main() {
 			}
 		}
 	} else {
-		// Client: only track local position, never send to WS
+		// Client: track local position and detect playback-restart
 		scanner := bufio.NewScanner(ipcConn)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -386,7 +406,23 @@ func main() {
 				continue
 			}
 
-			if event["event"] != "property-change" {
+			eventName, _ := event["event"].(string)
+
+			// Detect playback-restart after loadfile for transcoded seeks
+			if eventName == "playback-restart" {
+				if atomic.CompareAndSwapInt32(&waitingForRestart, 1, 0) {
+					log.Println("playback-restart received, signaling ready")
+					if atomic.CompareAndSwapInt32(&restartPauseAfter, 1, 0) {
+						ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+					}
+					atomic.AddInt32(&applyingCount, -1)
+					readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
+					wsWrite(readyMsg)
+				}
+				continue
+			}
+
+			if eventName != "property-change" {
 				continue
 			}
 
