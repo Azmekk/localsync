@@ -42,7 +42,8 @@ func SyncHandler(hub *Hub) http.HandlerFunc {
 			var raw map[string]interface{}
 			if err := json.Unmarshal(msg, &raw); err == nil {
 				source, _ := raw["source"].(string)
-				if source != "host" {
+				event, _ := raw["event"].(string)
+				if source != "host" && event != "ready" {
 					continue
 				}
 			}
@@ -168,11 +169,10 @@ func main() {
 
 func launchHostMPV(port int, quality string, filePath string) {
 	ipcPath := getHostIPCPath()
-	streamURL := fmt.Sprintf("http://localhost:%d/stream?quality=%s", port, quality)
 
 	mpvCmd := exec.Command("mpv",
 		fmt.Sprintf("--input-ipc-server=%s", ipcPath),
-		streamURL,
+		filePath,
 	)
 	mpvCmd.Stdout = os.Stdout
 	mpvCmd.Stderr = os.Stderr

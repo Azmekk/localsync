@@ -120,18 +120,25 @@ func main() {
 		initMsg.File, initMsg.Quality, initMsg.Pos, initMsg.Paused)
 
 	// Derive stream URL from server flag
-	streamURL := deriveStreamURL(*server, initMsg.Quality)
+	streamBaseURL := deriveStreamURL(*server, initMsg.Quality)
+	isTranscoded := initMsg.Quality != "source" && initMsg.Quality != "passthrough"
 
 	if !*noLaunch {
 		// Launch MPV
+		launchURL := streamBaseURL
 		mpvArgs := []string{
 			fmt.Sprintf("--input-ipc-server=%s", *ipcPath),
-			fmt.Sprintf("--start=%.1f", initMsg.Pos),
+		}
+		if isTranscoded && initMsg.Pos > 0 {
+			// --start doesn't work on non-seekable transcoded streams; use start param instead
+			launchURL = fmt.Sprintf("%s&start=%.1f", streamBaseURL, initMsg.Pos)
+		} else if initMsg.Pos > 0 {
+			mpvArgs = append(mpvArgs, fmt.Sprintf("--start=%.1f", initMsg.Pos))
 		}
 		if initMsg.Paused {
 			mpvArgs = append(mpvArgs, "--pause")
 		}
-		mpvArgs = append(mpvArgs, streamURL)
+		mpvArgs = append(mpvArgs, launchURL)
 
 		mpvCmd := exec.Command("mpv", mpvArgs...)
 		mpvCmd.Stdout = os.Stdout
@@ -161,13 +168,14 @@ func main() {
 	ipcWrite(ipcConn, `{"command":["observe_property",2,"time-pos"]}`)
 
 	var (
-		applyingCount int32
-		lastSeekTime  time.Time
-		lastSeekPos   float64
-		posMu         sync.Mutex
-		seekCooldown  = 100 * time.Millisecond
-		seekThreshold = 0.5
-		wsMu          sync.Mutex
+		applyingCount  int32
+		waitingForReady int32
+		lastSeekTime   time.Time
+		lastSeekPos    float64
+		posMu          sync.Mutex
+		seekCooldown   = 100 * time.Millisecond
+		seekThreshold  = 0.5
+		wsMu           sync.Mutex
 	)
 
 	wsWrite := func(data []byte) error {
@@ -196,10 +204,27 @@ func main() {
 				posMu.Lock()
 				lastSeekPos = msg.Pos
 				posMu.Unlock()
-				ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
-				time.AfterFunc(200*time.Millisecond, func() {
-					atomic.AddInt32(&applyingCount, -1)
-				})
+				if isTranscoded && *name != "host" {
+					// Reload stream at new position for transcoded content
+					loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
+					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
+					// Send ready after stream reloads
+					time.AfterFunc(3*time.Second, func() {
+						atomic.AddInt32(&applyingCount, -1)
+						readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
+						wsWrite(readyMsg)
+					})
+				} else {
+					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+					if *name == "host" && isTranscoded {
+						// Host pauses and waits for client to be ready
+						ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+						atomic.StoreInt32(&waitingForReady, 1)
+					}
+					time.AfterFunc(200*time.Millisecond, func() {
+						atomic.AddInt32(&applyingCount, -1)
+					})
+				}
 			case "pause":
 				atomic.AddInt32(&applyingCount, 1)
 				if msg.State != nil {
@@ -209,13 +234,33 @@ func main() {
 					posMu.Lock()
 					lastSeekPos = msg.Pos
 					posMu.Unlock()
-					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+					if isTranscoded && *name != "host" {
+						loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
+						ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
+						if msg.State != nil && *msg.State {
+							time.AfterFunc(1*time.Second, func() {
+								ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+							})
+						}
+						time.AfterFunc(3*time.Second, func() {
+							atomic.AddInt32(&applyingCount, -1)
+							readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: *name})
+							wsWrite(readyMsg)
+						})
+					} else {
+						ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
+						time.AfterFunc(200*time.Millisecond, func() {
+							atomic.AddInt32(&applyingCount, -1)
+						})
+					}
+				} else {
+					time.AfterFunc(200*time.Millisecond, func() {
+						atomic.AddInt32(&applyingCount, -1)
+					})
 				}
-				time.AfterFunc(200*time.Millisecond, func() {
-					atomic.AddInt32(&applyingCount, -1)
-				})
 			case "sync":
 				// Compare remote position with local, seek if drift > 1s
+				// Never use loadfile for drift correction — too disruptive
 				posMu.Lock()
 				localPos := lastSeekPos
 				posMu.Unlock()
@@ -228,6 +273,16 @@ func main() {
 					time.AfterFunc(200*time.Millisecond, func() {
 						atomic.AddInt32(&applyingCount, -1)
 					})
+				}
+			case "ready":
+				// Client is ready after rebuffering — unpause host
+				if *name == "host" && atomic.CompareAndSwapInt32(&waitingForReady, 1, 0) {
+					atomic.AddInt32(&applyingCount, 1)
+					ipcWrite(ipcConn, `{"command":["set_property","pause",false]}`)
+					time.AfterFunc(200*time.Millisecond, func() {
+						atomic.AddInt32(&applyingCount, -1)
+					})
+					log.Println("client ready, resuming playback")
 				}
 			}
 		}
@@ -269,6 +324,9 @@ func main() {
 			}
 
 			if ac := atomic.LoadInt32(&applyingCount); ac > 0 {
+				continue
+			}
+			if atomic.LoadInt32(&waitingForReady) != 0 {
 				continue
 			}
 

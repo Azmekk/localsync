@@ -82,6 +82,10 @@ func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, bit
 		args = append(args, "-re")
 	}
 
+	if start := r.URL.Query().Get("start"); start != "" {
+		args = append(args, "-ss", start)
+	}
+
 	args = append(args, "-i", filePath)
 	args = append(args, "-map", "0:v", "-map", "0:a")
 	if tc.Subtitles {
