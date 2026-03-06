@@ -129,9 +129,6 @@ func main() {
 		mpvArgs := []string{
 			fmt.Sprintf("--input-ipc-server=%s", *ipcPath),
 		}
-		if isTranscoded {
-			mpvArgs = append(mpvArgs, "--force-seekable=yes")
-		}
 		if isTranscoded && initMsg.Pos > 0 {
 			// --start doesn't work on non-seekable transcoded streams; use start param instead
 			launchURL = fmt.Sprintf("%s&start=%.1f", streamBaseURL, initMsg.Pos)
@@ -279,8 +276,12 @@ func main() {
 					})
 				}
 			case "sync":
+				// Skip drift correction for transcoded clients — set_property time-pos
+				// doesn't work on non-seekable streams and would freeze MPV.
+				if isTranscoded && *name != "host" {
+					break
+				}
 				// Compare remote position with local, seek if drift > 1s
-				// Never use loadfile for drift correction — too disruptive
 				posMu.Lock()
 				localPos := lastSeekPos
 				posMu.Unlock()
