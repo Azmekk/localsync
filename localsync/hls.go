@@ -254,6 +254,7 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 	segType := m.effectiveSegmentType()
 	if segType == "fmp4" {
 		args = append(args, "-hls_segment_type", "fmp4")
+		args = append(args, "-hls_fmp4_init_filename", filepath.Join(m.hlsDir, "init_%v.mp4"))
 	}
 
 	segExt := m.segmentExtension()
