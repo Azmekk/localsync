@@ -225,12 +225,11 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 
 	args = append(args, "-filter_complex", strings.Join(filterParts, ";"))
 
-	// Map video streams
+	// Map video + audio streams (one audio per variant to satisfy HLS muxer)
 	for i := range qualities {
 		args = append(args, "-map", mappedLabels[i])
+		args = append(args, "-map", "0:a")
 	}
-	// Map audio once
-	args = append(args, "-map", "0:a")
 
 	// Per-variant video encoding
 	for i, q := range qualities {
@@ -245,7 +244,7 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 		}
 	}
 
-	// Audio encoding (shared across all variants)
+	// Audio encoding (applied to all audio streams)
 	args = append(args, "-c:a", tc.AudioCodec)
 	if tc.AudioCodec != "copy" {
 		args = append(args, "-b:a", tc.AudioBitrate)
@@ -266,10 +265,11 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 		"-master_pl_name", "master.m3u8",
 	)
 
-	// Build var_stream_map: "v:0,a:0 v:1,a:0 v:2,a:0 ..."
+	// Build var_stream_map: "v:0,a:0 v:1,a:1 v:2,a:2 ..."
+	// Each variant has its own paired audio stream
 	var varMap []string
 	for i := range qualities {
-		varMap = append(varMap, fmt.Sprintf("v:%d,a:0", i))
+		varMap = append(varMap, fmt.Sprintf("v:%d,a:%d", i, i))
 	}
 	args = append(args, "-var_stream_map", strings.Join(varMap, " "))
 
