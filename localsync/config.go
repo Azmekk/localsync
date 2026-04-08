@@ -18,11 +18,37 @@ type TranscodeConfig struct {
 	Format       string   `toml:"format"`
 }
 
+type QualityPreset struct {
+	Name        string   `toml:"name"`
+	Bitrate     string   `toml:"bitrate"`
+	Resolution  string   `toml:"resolution"`
+	Passthrough bool     `toml:"passthrough"`
+	ExtraArgs   []string `toml:"extra_args"`
+}
+
+type HLSConfig struct {
+	Enabled         bool     `toml:"enabled"`
+	SegmentDuration int      `toml:"segment_duration"`
+	AutoGenerate    bool     `toml:"auto_generate"`
+	Qualities       []string `toml:"qualities"`
+	SegmentType     string   `toml:"segment_type"`
+}
+
 type Config struct {
-	Port       int               `toml:"port"`
-	MaxClients int               `toml:"max_clients"`
-	Quality    map[string]string `toml:"quality"`
-	Transcode  TranscodeConfig   `toml:"transcode"`
+	Port       int              `toml:"port"`
+	MaxClients int              `toml:"max_clients"`
+	Quality    []QualityPreset  `toml:"quality"`
+	Transcode  TranscodeConfig  `toml:"transcode"`
+	HLS        HLSConfig        `toml:"hls"`
+}
+
+func (c *Config) FindQuality(name string) *QualityPreset {
+	for i := range c.Quality {
+		if c.Quality[i].Name == name {
+			return &c.Quality[i]
+		}
+	}
+	return nil
 }
 
 const defaultConfig = `port = 13771
@@ -36,11 +62,24 @@ subtitles = true
 realtime = true
 format = "matroska"
 
-[quality]
-source = "passthrough"
-high = "8000k"
-mid = "3000k"
-low = "1000k"
+[[quality]]
+name = "source"
+passthrough = true
+
+[[quality]]
+name = "1080p"
+bitrate = "8000k"
+resolution = "1920x1080"
+
+[[quality]]
+name = "720p"
+bitrate = "3000k"
+resolution = "1280x720"
+
+[[quality]]
+name = "480p"
+bitrate = "1000k"
+resolution = "854x480"
 `
 
 func LoadConfig(path string) (Config, error) {
@@ -67,19 +106,12 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.MaxClients == 0 && !hasKey(data, "max_clients") {
 		cfg.MaxClients = 1
 	}
-	if cfg.Quality == nil {
-		cfg.Quality = make(map[string]string)
-	}
-
-	defaults := map[string]string{
-		"source": "passthrough",
-		"high":   "8000k",
-		"mid":    "3000k",
-		"low":    "1000k",
-	}
-	for k, v := range defaults {
-		if _, ok := cfg.Quality[k]; !ok {
-			cfg.Quality[k] = v
+	if len(cfg.Quality) == 0 {
+		cfg.Quality = []QualityPreset{
+			{Name: "source", Passthrough: true},
+			{Name: "1080p", Bitrate: "8000k", Resolution: "1920x1080"},
+			{Name: "720p", Bitrate: "3000k", Resolution: "1280x720"},
+			{Name: "480p", Bitrate: "1000k", Resolution: "854x480"},
 		}
 	}
 
@@ -103,6 +135,13 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.Transcode.Format == "" {
 		cfg.Transcode.Format = "matroska"
+	}
+
+	if cfg.HLS.SegmentDuration == 0 {
+		cfg.HLS.SegmentDuration = 4
+	}
+	if cfg.HLS.SegmentType == "" {
+		cfg.HLS.SegmentType = "mpegts"
 	}
 
 	return cfg, nil

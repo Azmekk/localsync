@@ -83,8 +83,9 @@ curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-file` | *(required)* | Path to the video file to play |
-| `-quality` | `source` | Quality preset to use (`source`, `high`, `mid`, `low`, or any custom preset from config) |
+| `-quality` | `source` | Quality preset to use (`source`, `1080p`, `720p`, `480p`, or any custom preset from config) |
 | `-config` | OS config dir | Path to `config.toml` |
+| `-precreate-hls` | `false` | Generate HLS segments for the given quality and exit |
 | `-version` | | Print version and exit |
 | `-update` | | Update localsync and syncclient to the latest release |
 
@@ -97,6 +98,7 @@ curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--server` | *(required)* | WebSocket URL of the host (`ws://<host-ip>:<port>/ws`) |
+| `--quality` | *(adaptive)* | Quality to use in HLS mode (`adaptive`, or a preset name like `720p`) |
 | `--ipc` | `/tmp/mpvsync` (Unix) or `\\.\pipe\mpvsync` (Windows) | Path for the MPV IPC socket |
 | `--name` | `client` | Identifier sent with sync events (`host` or `client`) |
 | `--no-launch` | `false` | Skip launching MPV (used internally by the host) |
@@ -129,25 +131,80 @@ subtitles = true
 realtime = true
 format = "matroska"
 
-[quality]
-source = "passthrough"
-high = "8000k"
-mid = "3000k"
-low = "1000k"
+[[quality]]
+name = "source"
+passthrough = true
+
+[[quality]]
+name = "1080p"
+bitrate = "8000k"
+resolution = "1920x1080"
+
+[[quality]]
+name = "720p"
+bitrate = "3000k"
+resolution = "1280x720"
+
+[[quality]]
+name = "480p"
+bitrate = "1000k"
+resolution = "854x480"
+
+[hls]
+enabled = false
+segment_duration = 4
+auto_generate = false
+qualities = ["1080p", "720p", "480p"]
+segment_type = "mpegts"
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `port` | `13771` | HTTP/WebSocket server port |
 | `max_clients` | `1` | Max simultaneous remote viewers (`0` = unlimited) |
-| `quality.*` | see above | Named quality presets — `source` streams the file directly, others transcode via FFmpeg at the given bitrate |
+| `quality[].name` | | Preset name (e.g., `source`, `1080p`, `720p`) |
+| `quality[].bitrate` | | FFmpeg video bitrate (e.g., `8000k`) — required unless `passthrough = true` |
+| `quality[].resolution` | | Target resolution (e.g., `1920x1080`) — optional, omit to keep source resolution |
+| `quality[].passthrough` | `false` | Serve source file directly without transcoding |
+| `quality[].extra_args` | | Per-quality FFmpeg args — overrides `transcode.extra_args` for this preset |
 | `transcode.video_codec` | `libx264` | FFmpeg video codec (e.g. `hevc_nvenc`, `h264_vaapi`) |
-| `transcode.extra_args` | `["-preset", "ultrafast", "-tune", "zerolatency"]` | Additional encoder-specific FFmpeg flags |
+| `transcode.extra_args` | `["-preset", "ultrafast", "-tune", "zerolatency"]` | Default encoder-specific FFmpeg flags (overridden by per-quality `extra_args`) |
 | `transcode.audio_codec` | `aac` | Audio codec — set to `copy` to passthrough original audio |
 | `transcode.audio_bitrate` | `128k` | Audio bitrate (ignored when `audio_codec = "copy"`) |
 | `transcode.subtitles` | `true` | Pass through subtitle streams in transcoded output |
 | `transcode.realtime` | `true` | Enable `-re` (realtime throttling) — disable for hardware encoders that can buffer ahead |
 | `transcode.format` | `matroska` | Container format (`matroska`, `mpegts`, `mp4`, etc.) |
+| `hls.enabled` | `false` | Enable adaptive HLS mode |
+| `hls.segment_duration` | `4` | Duration of each HLS segment in seconds |
+| `hls.auto_generate` | `false` | Automatically generate HLS on server startup |
+| `hls.qualities` | `[]` | Quality presets to encode (empty = all non-passthrough) |
+| `hls.segment_type` | `mpegts` | Segment format: `mpegts` (`.ts`) or `fmp4` (`.m4s`, required for AV1) |
+
+### Adaptive HLS
+
+LocalSync can pre-create a multi-variant HLS stream with a single FFmpeg command that encodes all quality variants simultaneously. This produces a `master.m3u8` playlist that MPV uses for adaptive bitrate switching.
+
+**One-shot generation** (generates all configured variants):
+
+```bash
+./localsync -file /path/to/movie.mkv -precreate-hls
+```
+
+**Auto-generation on startup** — set `hls.enabled = true` and `hls.auto_generate = true` in config. The server starts immediately while HLS generates in the background; clients fall back to live transcoding until generation completes.
+
+**Client quality selection** — when the server is in HLS mode, clients use adaptive streaming by default. Pin a specific quality with `--quality`:
+
+```bash
+./syncclient --server ws://host:13771/ws --quality 720p
+```
+
+HLS segments are stored in `.localsync-hls/` next to the video file. HLS streams are natively seekable in MPV. For AV1 codecs, set `segment_type = "fmp4"` to use fMP4 segments (`.m4s`) instead of MPEG-TS.
+
+### Bandwidth-Aware Pause
+
+When a client's buffer runs dry due to insufficient bandwidth, the host is automatically paused and notified with the client's download speed. The log message includes a recommended bitrate so you can adjust the quality preset. Once the client's buffer recovers, playback resumes automatically.
+
+Clients buffer up to 100MB of content ahead to absorb short bandwidth dips.
 
 ### Hardware encoding examples
 
@@ -236,6 +293,6 @@ format = "matroska"
 Requires Go 1.21+.
 
 ```bash
-go build -o localsync .
-go build -o syncclient ./cmd/syncclient
+go build -o localsync ./localsync
+go build -o syncclient ./syncclient
 ```

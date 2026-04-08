@@ -21,25 +21,40 @@ var mimeTypes = map[string]string{
 	".flv":  "video/x-flv",
 }
 
-func StreamHandler(cfg Config, filePath string) http.HandlerFunc {
+func StreamHandler(cfg Config, filePath string, hlsMgr *HLSManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		quality := r.URL.Query().Get("quality")
+
+		// If HLS cache is complete, redirect to master or variant playlist
+		if hlsMgr != nil && hlsMgr.HasCompleteCache() {
+			if quality == "" || quality == "adaptive" {
+				http.Redirect(w, r, "/hls/master.m3u8", http.StatusFound)
+				return
+			}
+			// Specific variant requested — find its stream index
+			idx := hlsMgr.qualityVariantIndex(quality)
+			if idx >= 0 {
+				http.Redirect(w, r, fmt.Sprintf("/hls/stream_%d.m3u8", idx), http.StatusFound)
+				return
+			}
+		}
+
 		if quality == "" {
 			quality = "source"
 		}
 
-		bitrate, ok := cfg.Quality[quality]
-		if !ok {
+		preset := cfg.FindQuality(quality)
+		if preset == nil {
 			http.Error(w, fmt.Sprintf("unknown quality preset: %s", quality), http.StatusBadRequest)
 			return
 		}
 
-		if quality == "source" || bitrate == "passthrough" {
+		if preset.Passthrough {
 			servePassthrough(w, r, filePath)
 			return
 		}
 
-		serveTranscode(w, r, filePath, bitrate, cfg.Transcode)
+		serveTranscode(w, r, filePath, *preset, cfg.Transcode)
 	}
 }
 
@@ -75,7 +90,7 @@ var formatContentTypes = map[string]string{
 	"webm":     "video/webm",
 }
 
-func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, bitrate string, tc TranscodeConfig) {
+func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, preset QualityPreset, tc TranscodeConfig) {
 	var args []string
 
 	if tc.Realtime {
@@ -92,8 +107,20 @@ func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, bit
 		args = append(args, "-map", "0:s?")
 	}
 
-	args = append(args, "-b:v", bitrate, "-c:v", tc.VideoCodec)
-	args = append(args, tc.ExtraArgs...)
+	if preset.Resolution != "" {
+		// Parse "WxH" and use -2 for width to preserve aspect ratio
+		parts := strings.SplitN(preset.Resolution, "x", 2)
+		if len(parts) == 2 {
+			args = append(args, "-vf", fmt.Sprintf("scale=-2:%s", parts[1]))
+		}
+	}
+
+	args = append(args, "-b:v", preset.Bitrate, "-c:v", tc.VideoCodec)
+	extraArgs := preset.ExtraArgs
+	if len(extraArgs) == 0 {
+		extraArgs = tc.ExtraArgs
+	}
+	args = append(args, extraArgs...)
 
 	args = append(args, "-c:a", tc.AudioCodec)
 	if tc.AudioCodec != "copy" {

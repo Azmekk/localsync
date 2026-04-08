@@ -19,28 +19,32 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"localsync/internal/update"
+	"localsync/shared/update"
 )
 
 type InitMessage struct {
-	Event   string  `json:"event"`
-	File    string  `json:"file"`
-	Quality string  `json:"quality"`
-	Pos     float64 `json:"pos"`
-	Paused  bool    `json:"paused"`
+	Event     string   `json:"event"`
+	File      string   `json:"file"`
+	Quality   string   `json:"quality"`
+	Pos       float64  `json:"pos"`
+	Paused    bool     `json:"paused"`
+	HLSMode   bool     `json:"hls_mode"`
+	Qualities []string `json:"qualities"`
 }
 
 type SyncMessage struct {
-	Event  string  `json:"event"`
-	State  *bool   `json:"state,omitempty"`
-	Pos    float64 `json:"pos"`
-	Source string  `json:"source"`
+	Event  string   `json:"event"`
+	State  *bool    `json:"state,omitempty"`
+	Pos    float64  `json:"pos"`
+	Source string   `json:"source"`
+	Speed  *float64 `json:"speed,omitempty"`
 }
 
 func main() {
 	server := flag.String("server", "", "ws://<host>:<port>/ws (required)")
 	ipcPath := flag.String("ipc", defaultIPCPath(), "path for MPV IPC socket")
 	name := flag.String("name", "client", "identifier sent with sync events")
+	quality := flag.String("quality", "", "quality to use in HLS mode (adaptive if empty)")
 	noLaunch := flag.Bool("no-launch", false, "skip launching MPV (used by host)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	doUpdate := flag.Bool("update", false, "update localsync and syncclient to the latest release")
@@ -116,20 +120,46 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: expected init message, got: %s\n", string(rawMsg))
 		os.Exit(1)
 	}
-	log.Printf("received init: file=%s quality=%s pos=%.1f paused=%v",
-		initMsg.File, initMsg.Quality, initMsg.Pos, initMsg.Paused)
+	log.Printf("received init: file=%s quality=%s pos=%.1f paused=%v hls_mode=%v",
+		initMsg.File, initMsg.Quality, initMsg.Pos, initMsg.Paused, initMsg.HLSMode)
 
-	// Derive stream URL from server flag
-	streamBaseURL := deriveStreamURL(*server, initMsg.Quality)
-	isTranscoded := initMsg.Quality != "source" && initMsg.Quality != "passthrough"
+	// Derive stream URL and seekability
+	var streamBaseURL string
+	var isTranscoded bool
+	var isSeekable bool
+
+	if initMsg.HLSMode {
+		if *quality != "" && *quality != "adaptive" {
+			// User pinned a specific quality
+			streamBaseURL = deriveStreamURL(*server, *quality)
+		} else {
+			// Adaptive — load master playlist
+			streamBaseURL = deriveHLSURL(*server)
+		}
+		isSeekable = true
+		isTranscoded = false
+		if len(initMsg.Qualities) > 0 {
+			log.Printf("HLS mode — available qualities: %v", initMsg.Qualities)
+			if *quality == "" || *quality == "adaptive" {
+				log.Println("using adaptive streaming (tip: use --quality <name> to pin a specific quality)")
+			}
+		}
+	} else {
+		streamBaseURL = deriveStreamURL(*server, initMsg.Quality)
+		isTranscoded = initMsg.Quality != "source" && initMsg.Quality != "passthrough"
+		isSeekable = !isTranscoded
+	}
 
 	if !*noLaunch {
 		// Launch MPV
 		launchURL := streamBaseURL
 		mpvArgs := []string{
 			fmt.Sprintf("--input-ipc-server=%s", *ipcPath),
+			"--demuxer-max-bytes=100MiB",
+			"--demuxer-max-back-bytes=50MiB",
+			"--cache=yes",
 		}
-		if isTranscoded && initMsg.Pos > 0 {
+		if !isSeekable && initMsg.Pos > 0 {
 			// --start doesn't work on non-seekable transcoded streams; use start param instead
 			launchURL = fmt.Sprintf("%s&start=%.1f", streamBaseURL, initMsg.Pos)
 		} else if initMsg.Pos > 0 {
@@ -166,13 +196,18 @@ func main() {
 	// Subscribe to properties
 	ipcWrite(ipcConn, `{"command":["observe_property",1,"pause"]}`)
 	ipcWrite(ipcConn, `{"command":["observe_property",2,"time-pos"]}`)
+	ipcWrite(ipcConn, `{"command":["observe_property",3,"paused-for-cache"]}`)
+	ipcWrite(ipcConn, `{"command":["observe_property",4,"cache-speed"]}`)
 
 	var (
-		applyingCount      int32
-		waitingForReady    int32
-		waitingForRestart  int32
-		restartPauseAfter  int32 // if set, re-pause after playback-restart
-		lastSeekTime       time.Time
+		applyingCount       int32
+		waitingForReady     int32
+		waitingForRestart   int32
+		waitingForBuffering int32
+		restartPauseAfter   int32 // if set, re-pause after playback-restart
+		cacheSpeed          float64
+		cacheSpeedMu        sync.Mutex
+		lastSeekTime        time.Time
 		lastSeekPos        float64
 		posMu              sync.Mutex
 		seekCooldown       = 100 * time.Millisecond
@@ -206,7 +241,7 @@ func main() {
 				posMu.Lock()
 				lastSeekPos = msg.Pos
 				posMu.Unlock()
-				if isTranscoded && *name != "host" {
+				if !isSeekable && *name != "host" {
 					// Reload stream at new position for transcoded content
 					loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
@@ -224,7 +259,7 @@ func main() {
 					})
 				} else {
 					ipcWrite(ipcConn, fmt.Sprintf(`{"command":["set_property","time-pos",%f]}`, msg.Pos))
-					if *name == "host" && isTranscoded {
+					if *name == "host" && !isSeekable {
 						// Host pauses and waits for client to be ready
 						ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
 						atomic.StoreInt32(&waitingForReady, 1)
@@ -242,7 +277,7 @@ func main() {
 					posMu.Lock()
 					lastSeekPos = msg.Pos
 					posMu.Unlock()
-					if isTranscoded && *name != "host" {
+					if !isSeekable && *name != "host" {
 						loadURL := fmt.Sprintf("%s&start=%.1f", streamBaseURL, msg.Pos)
 						ipcWrite(ipcConn, fmt.Sprintf(`{"command":["loadfile","%s","replace"]}`, loadURL))
 						// Re-pause after restart if needed
@@ -276,9 +311,9 @@ func main() {
 					})
 				}
 			case "sync":
-				// Skip drift correction for transcoded clients — set_property time-pos
-				// doesn't work on non-seekable streams and would freeze MPV.
-				if isTranscoded && *name != "host" {
+				// Skip drift correction for non-seekable clients (live transcoded streams).
+				// HLS and source streams are seekable and support drift correction.
+				if !isSeekable && *name != "host" {
 					break
 				}
 				// Compare remote position with local, seek if drift > 1s
@@ -304,6 +339,33 @@ func main() {
 						atomic.AddInt32(&applyingCount, -1)
 					})
 					log.Println("client ready, resuming playback")
+				}
+			case "buffering":
+				if *name == "host" {
+					if msg.State != nil && *msg.State {
+						// Client is buffering — pause host
+						atomic.AddInt32(&applyingCount, 1)
+						atomic.StoreInt32(&waitingForBuffering, 1)
+						ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+						speed := float64(0)
+						if msg.Speed != nil {
+							speed = *msg.Speed
+						}
+						log.Printf("client buffering — pausing (client download speed: %.0f kbps, recommended bitrate: <= %.0f kbps)", speed, speed)
+						time.AfterFunc(200*time.Millisecond, func() {
+							atomic.AddInt32(&applyingCount, -1)
+						})
+					} else {
+						// Client finished buffering — resume host
+						if atomic.CompareAndSwapInt32(&waitingForBuffering, 1, 0) {
+							atomic.AddInt32(&applyingCount, 1)
+							ipcWrite(ipcConn, `{"command":["set_property","pause",false]}`)
+							time.AfterFunc(200*time.Millisecond, func() {
+								atomic.AddInt32(&applyingCount, -1)
+							})
+							log.Println("client buffer recovered, resuming")
+						}
+					}
 				}
 			}
 		}
@@ -348,6 +410,9 @@ func main() {
 				continue
 			}
 			if atomic.LoadInt32(&waitingForReady) != 0 {
+				continue
+			}
+			if atomic.LoadInt32(&waitingForBuffering) != 0 {
 				continue
 			}
 
@@ -428,11 +493,47 @@ func main() {
 			}
 
 			propName, _ := event["name"].(string)
-			if propName == "time-pos" {
+			switch propName {
+			case "time-pos":
 				if pos, ok := event["data"].(float64); ok {
 					posMu.Lock()
 					lastSeekPos = pos
 					posMu.Unlock()
+				}
+			case "cache-speed":
+				if speed, ok := event["data"].(float64); ok {
+					cacheSpeedMu.Lock()
+					cacheSpeed = speed
+					cacheSpeedMu.Unlock()
+				}
+			case "paused-for-cache":
+				paused, ok := event["data"].(bool)
+				if !ok {
+					continue
+				}
+				if paused {
+					cacheSpeedMu.Lock()
+					speedKbps := cacheSpeed * 8 / 1000 // bytes/s to kbps
+					cacheSpeedMu.Unlock()
+					bufMsg := SyncMessage{
+						Event:  "buffering",
+						State:  &paused,
+						Speed:  &speedKbps,
+						Source: *name,
+					}
+					data, _ := json.Marshal(bufMsg)
+					wsWrite(data)
+					log.Printf("buffering — download speed: %.0f kbps", speedKbps)
+				} else {
+					notPaused := false
+					bufMsg := SyncMessage{
+						Event:  "buffering",
+						State:  &notPaused,
+						Source: *name,
+					}
+					data, _ := json.Marshal(bufMsg)
+					wsWrite(data)
+					log.Println("buffer recovered")
 				}
 			}
 		}
@@ -456,6 +557,18 @@ func deriveStreamURL(serverWS string, quality string) string {
 		scheme = "https"
 	}
 	return fmt.Sprintf("%s://%s/stream?quality=%s", scheme, u.Host, quality)
+}
+
+func deriveHLSURL(serverWS string) string {
+	u, err := url.Parse(serverWS)
+	if err != nil {
+		log.Fatalf("invalid server URL: %v", err)
+	}
+	scheme := "http"
+	if u.Scheme == "wss" {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s/hls/master.m3u8", scheme, u.Host)
 }
 
 func waitForIPC(path string, timeout time.Duration) (net.Conn, error) {

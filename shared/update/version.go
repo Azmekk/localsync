@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Version is set at build time via -ldflags "-X localsync/internal/update.Version=vX.Y.Z"
+// Version is set at build time via -ldflags "-X localsync/shared/update.Version=vX.Y.Z"
 var Version = "dev"
 
 // CompareVersions compares two semver strings (with or without "v" prefix).

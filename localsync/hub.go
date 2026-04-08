@@ -9,10 +9,12 @@ import (
 )
 
 type SessionState struct {
-	File    string  `json:"file"`
-	Quality string  `json:"quality"`
-	Pos     float64 `json:"pos"`
-	Paused  bool    `json:"paused"`
+	File      string   `json:"file"`
+	Quality   string   `json:"quality"`
+	Pos       float64  `json:"pos"`
+	Paused    bool     `json:"paused"`
+	HLSMode   bool     `json:"hls_mode,omitempty"`
+	Qualities []string `json:"qualities,omitempty"`
 }
 
 type Hub struct {
@@ -60,11 +62,13 @@ func (h *Hub) Run() {
 			h.clients[conn] = true
 			h.mu.Lock()
 			initMsg, _ := json.Marshal(map[string]interface{}{
-				"event":   "init",
-				"file":    h.state.File,
-				"quality": h.state.Quality,
-				"pos":     h.state.Pos,
-				"paused":  h.state.Paused,
+				"event":     "init",
+				"file":      h.state.File,
+				"quality":   h.state.Quality,
+				"pos":       h.state.Pos,
+				"paused":    h.state.Paused,
+				"hls_mode":  h.state.HLSMode,
+				"qualities": h.state.Qualities,
 			})
 			h.mu.Unlock()
 			if err := conn.WriteMessage(websocket.TextMessage, initMsg); err != nil {
@@ -102,6 +106,13 @@ func (h *Hub) Unregister(c *websocket.Conn) {
 
 func (h *Hub) Broadcast(sender *websocket.Conn, msg []byte) {
 	h.broadcast <- broadcastMsg{sender: sender, data: msg}
+}
+
+func (h *Hub) SetHLSReady(ready bool, qualities []string) {
+	h.mu.Lock()
+	h.state.HLSMode = ready
+	h.state.Qualities = qualities
+	h.mu.Unlock()
 }
 
 func (h *Hub) UpdateState(msg []byte) {

@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"localsync/internal/update"
+	"localsync/shared/update"
 )
 
 var upgrader = websocket.Upgrader{
@@ -43,7 +43,7 @@ func SyncHandler(hub *Hub) http.HandlerFunc {
 			if err := json.Unmarshal(msg, &raw); err == nil {
 				source, _ := raw["source"].(string)
 				event, _ := raw["event"].(string)
-				if source != "host" && event != "ready" {
+				if source != "host" && event != "ready" && event != "buffering" {
 					continue
 				}
 			}
@@ -64,7 +64,8 @@ func defaultConfigPath() string {
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
 	filePath := flag.String("file", "", "absolute path to video file (required)")
-	quality := flag.String("quality", "source", "quality preset: source|high|mid|low")
+	quality := flag.String("quality", "source", "quality preset: source|1080p|720p|480p")
+	precreateHLS := flag.Bool("precreate-hls", false, "generate HLS segments for the given quality and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	doUpdate := flag.Bool("update", false, "update localsync and syncclient to the latest release")
 	flag.Parse()
@@ -100,45 +101,87 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *quality != "source" {
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
-			fmt.Fprintln(os.Stderr, "error: ffmpeg not found on PATH (required for transcoding)")
-			os.Exit(1)
-		}
-	}
-
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		log.Printf("warning: could not load config (%v), using defaults", err)
 		cfg = Config{
 			Port:       13771,
 			MaxClients: 1,
-			Quality: map[string]string{
-				"source": "passthrough",
-				"high":   "8000k",
-				"mid":    "3000k",
-				"low":    "1000k",
+			Quality: []QualityPreset{
+				{Name: "source", Passthrough: true},
+				{Name: "1080p", Bitrate: "8000k", Resolution: "1920x1080"},
+				{Name: "720p", Bitrate: "3000k", Resolution: "1280x720"},
+				{Name: "480p", Bitrate: "1000k", Resolution: "854x480"},
 			},
 		}
 	}
 
-	if _, ok := cfg.Quality[*quality]; !ok {
+	preset := cfg.FindQuality(*quality)
+	if preset == nil {
 		fmt.Fprintf(os.Stderr, "error: unknown quality preset: %s\n", *quality)
 		os.Exit(1)
 	}
 
+	if !preset.Passthrough {
+		if _, err := exec.LookPath("ffmpeg"); err != nil {
+			fmt.Fprintln(os.Stderr, "error: ffmpeg not found on PATH (required for transcoding)")
+			os.Exit(1)
+		}
+	}
+
+	// HLS manager setup
+	var hlsMgr *HLSManager
+	if cfg.HLS.Enabled {
+		hlsMgr = NewHLSManager(cfg, absFile)
+	}
+
+	// One-shot HLS generation mode
+	if *precreateHLS {
+		if hlsMgr == nil {
+			hlsMgr = NewHLSManager(cfg, absFile)
+		}
+		if err := hlsMgr.GenerateAll(); err != nil {
+			fmt.Fprintf(os.Stderr, "HLS generation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("HLS generation complete for all variants")
+		return
+	}
+
+	var hlsQualities []string
+	if hlsMgr != nil {
+		hlsQualities = hlsMgr.resolveQualityNames()
+	}
+
 	initialState := SessionState{
-		File:    filepath.Base(absFile),
-		Quality: *quality,
-		Pos:     0,
-		Paused:  false,
+		File:      filepath.Base(absFile),
+		Quality:   *quality,
+		Pos:       0,
+		Paused:    false,
+		HLSMode:   hlsMgr != nil && hlsMgr.HasCompleteCache(),
+		Qualities: hlsQualities,
 	}
 
 	hub := NewHub(initialState, cfg.MaxClients)
 	go hub.Run()
 
-	http.HandleFunc("/stream", StreamHandler(cfg, absFile))
+	// Background HLS auto-generation
+	if hlsMgr != nil && cfg.HLS.AutoGenerate {
+		go func() {
+			if err := hlsMgr.GenerateAll(); err != nil {
+				log.Printf("[hls] generation failed: %v", err)
+			} else {
+				hub.SetHLSReady(true, hlsQualities)
+				log.Println("[hls] all variants ready")
+			}
+		}()
+	}
+
+	http.HandleFunc("/stream", StreamHandler(cfg, absFile, hlsMgr))
 	http.HandleFunc("/ws", SyncHandler(hub))
+	if hlsMgr != nil {
+		http.HandleFunc("/hls/", hlsMgr.ServeHTTP)
+	}
 
 	// Drain background update check (wait up to 2s)
 	select {
