@@ -174,6 +174,7 @@ func (m *HLSManager) GenerateAll() error {
 	log.Printf("[hls] generating %d variants: ffmpeg %s", len(qualities), strings.Join(args, " "))
 
 	cmd := exec.Command("ffmpeg", args...)
+	cmd.Dir = m.hlsDir // run from hlsDir so relative output paths resolve correctly
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -254,15 +255,16 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 	segType := m.effectiveSegmentType()
 	if segType == "fmp4" {
 		args = append(args, "-hls_segment_type", "fmp4")
-		args = append(args, "-hls_fmp4_init_filename", filepath.Join(m.hlsDir, "init_%v.mp4"))
+		args = append(args, "-hls_fmp4_init_filename", "init_%v.mp4")
 	}
 
+	// Output paths are relative — FFmpeg runs from hlsDir via cmd.Dir
 	segExt := m.segmentExtension()
 	args = append(args,
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%d", m.cfg.HLS.SegmentDuration),
 		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", filepath.Join(m.hlsDir, "stream_%v_%05d"+segExt),
+		"-hls_segment_filename", "stream_%v_%05d"+segExt,
 		"-master_pl_name", "master.m3u8",
 	)
 
@@ -274,7 +276,7 @@ func (m *HLSManager) buildFFmpegArgs(qualities []QualityPreset) []string {
 	}
 	args = append(args, "-var_stream_map", strings.Join(varMap, " "))
 
-	args = append(args, filepath.Join(m.hlsDir, "stream_%v.m3u8"))
+	args = append(args, "stream_%v.m3u8")
 
 	return args
 }
