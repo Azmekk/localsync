@@ -157,6 +157,7 @@ func main() {
 			fmt.Sprintf("--input-ipc-server=%s", *ipcPath),
 			"--demuxer-max-bytes=100MiB",
 			"--demuxer-max-back-bytes=50MiB",
+			"--demuxer-readahead-secs=9999",
 			"--cache=yes",
 		}
 		if !isSeekable && initMsg.Pos > 0 {
