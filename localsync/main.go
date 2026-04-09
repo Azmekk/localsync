@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -9,14 +10,23 @@ import (
 	"path/filepath"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/spf13/cobra"
 
 	"localsync/localsync/internal/handler"
 	"localsync/localsync/internal/model"
 	"localsync/localsync/internal/service"
+	"localsync/localsync/internal/tui"
+	"localsync/shared/logging"
 	"localsync/shared/update"
 )
+
+// tuiProgram is set after the TUI starts, used by launchHostMPV to pipe output.
+var tuiProgram *tea.Program
+
+// logFileWriter is set after log file is created, used by launchHostMPV.
+var logFileWriter io.Writer
 
 var rootCmd = &cobra.Command{
 	Use:   "localsync",
@@ -27,10 +37,10 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.Flags().StringP("config", "c", defaultConfigPath(), "path to config.toml")
 	rootCmd.Flags().StringP("file", "f", "", "path to video file")
-	rootCmd.Flags().String("quality", "source", "quality preset: source|1080p|720p|480p")
+	rootCmd.Flags().StringP("quality", "q", "source", "quality preset: source|1080p|720p|480p")
 	rootCmd.Flags().Bool("create-media-folder", false, "create .localsync/ variant folder next to video and exit")
-	rootCmd.Flags().Bool("version", false, "print version and exit")
-	rootCmd.Flags().Bool("update", false, "update to the latest release")
+	rootCmd.Flags().BoolP("version", "v", false, "print version and exit")
+	rootCmd.Flags().BoolP("update", "u", false, "update to the latest release")
 	rootCmd.MarkFlagRequired("file")
 }
 
@@ -50,6 +60,16 @@ func run(cmd *cobra.Command, args []string) error {
 	doUpdate, _ := cmd.Flags().GetBool("update")
 	if doUpdate {
 		return update.SelfUpdate("localsync")
+	}
+
+	// Set up file logging
+	logFile, logCleanup, err := logging.Setup("localsync")
+	if err != nil {
+		log.Printf("warning: could not set up log file: %v", err)
+	} else {
+		defer logCleanup()
+		logFileWriter = logFile
+		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 	}
 
 	updateCh := update.StartBackgroundCheck()
@@ -99,12 +119,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Scan for pre-compressed variants
 	variants := service.ScanVariants(absFile)
-	if len(variants) > 0 {
-		log.Printf("found %d variant(s) in .localsync/:", len(variants))
-		for _, v := range variants {
-			log.Printf("  %s (%s, %.1f MB)", v.Name, v.Filename, float64(v.Size)/(1024*1024))
-		}
-	}
 
 	initialState := model.SessionState{
 		File:     filepath.Base(absFile),
@@ -116,10 +130,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	hub := service.NewHub(initialState, cfg.MaxClients)
 	go hub.Run()
-
-	// Start stats display
-	statsDone := make(chan struct{})
-	service.StartStatsDisplay(hub, 3*time.Second, statsDone)
 
 	// Build chi router
 	r := chi.NewRouter()
@@ -140,17 +150,49 @@ func run(cmd *cobra.Command, args []string) error {
 	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, quality)
 	wsURL := fmt.Sprintf("ws://0.0.0.0:%d/ws", cfg.Port)
 
-	fmt.Printf("LocalSync %s running on %s\n", update.Version, addr)
-	fmt.Printf("Now playing: %s\n", absFile)
-	fmt.Printf("Quality:     %s\n", quality)
-	fmt.Printf("Stream:      %s\n", streamURL)
-	fmt.Printf("Sync WS:     %s\n", wsURL)
-	fmt.Println()
-	fmt.Println("Waiting for client to connect...")
+	// Start HTTP server in background
+	go func() {
+		if err := http.ListenAndServe(addr, r); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
 
-	go launchHostMPV(cfg.Port, quality, absFile)
+	// Create TUI
+	hostModel := tui.NewHostModel(hub, tui.ServerInfo{
+		File:      filepath.Base(absFile),
+		Quality:   quality,
+		Version:   update.Version,
+		Port:      cfg.Port,
+		StreamURL: streamURL,
+		WsURL:     wsURL,
+		Variants:  variants,
+	})
 
-	return http.ListenAndServe(addr, r)
+	p := tea.NewProgram(hostModel)
+	tuiProgram = p
+
+	// Redirect log output to TUI + log file
+	tuiWriter := &tui.TUILogWriter{Program: p}
+	if logFile != nil {
+		log.SetOutput(io.MultiWriter(tuiWriter, logFile))
+	} else {
+		log.SetOutput(tuiWriter)
+	}
+
+	// Log variant info through TUI
+	if len(variants) > 0 {
+		log.Printf("found %d variant(s) in .localsync/", len(variants))
+		for _, v := range variants {
+			log.Printf("  %s (%s, %.1f MB)", v.Name, v.Filename, float64(v.Size)/(1024*1024))
+		}
+	}
+
+	// Launch host MPV (will use tuiProgram for output)
+	go launchHostMPV(cfg.Port, absFile)
+
+	// Run TUI (blocks until quit)
+	_, err = p.Run()
+	return err
 }
 
 func toStreamConfig(cfg Config) handler.StreamConfig {
@@ -185,15 +227,30 @@ func defaultConfigPath() string {
 	return filepath.Join(dir, "localsync", "config.toml")
 }
 
-func launchHostMPV(port int, quality string, filePath string) {
+func launchHostMPV(port int, filePath string) {
 	ipcPath := getHostIPCPath()
 
 	mpvCmd := exec.Command("mpv",
 		fmt.Sprintf("--input-ipc-server=%s", ipcPath),
 		filePath,
 	)
-	mpvCmd.Stdout = os.Stdout
-	mpvCmd.Stderr = os.Stderr
+
+	// Pipe MPV output to TUI log panel + log file
+	var writers []io.Writer
+	if tuiProgram != nil {
+		writers = append(writers, &tui.TUILogWriter{Program: tuiProgram})
+	}
+	if logFileWriter != nil {
+		writers = append(writers, logFileWriter)
+	}
+	if len(writers) > 0 {
+		w := io.MultiWriter(writers...)
+		mpvCmd.Stdout = w
+		mpvCmd.Stderr = w
+	} else {
+		mpvCmd.Stdout = io.Discard
+		mpvCmd.Stderr = io.Discard
+	}
 
 	if err := mpvCmd.Start(); err != nil {
 		log.Printf("warning: could not launch host MPV: %v", err)
@@ -207,8 +264,8 @@ func launchHostMPV(port int, quality string, filePath string) {
 		"--name", "host",
 		"--no-launch",
 	)
-	syncClient.Stdout = os.Stdout
-	syncClient.Stderr = os.Stderr
+	syncClient.Stdout = io.Discard
+	syncClient.Stderr = io.Discard
 	if err := syncClient.Start(); err != nil {
 		log.Printf("note: syncclient not found, host sync not active. Build syncclient and add to PATH for host-side sync.")
 	}

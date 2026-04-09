@@ -83,11 +83,11 @@ localsync --file /path/to/movie.mkv
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--file`, `-f` | *(required)* | Path to the video file to play |
-| `--quality` | `source` | Quality preset to use (`source`, `1080p`, `720p`, `480p`, or any custom preset from config) |
+| `--quality`, `-q` | `source` | Quality preset to use (`source`, `1080p`, `720p`, `480p`, or any custom preset from config) |
 | `--config`, `-c` | OS config dir | Path to `config.toml` |
 | `--create-media-folder` | `false` | Create `.localsync/` variant folder next to the video and exit |
-| `--version` | | Print version and exit |
-| `--update` | | Update localsync and syncclient to the latest release |
+| `--version`, `-v` | | Print version and exit |
+| `--update`, `-u` | | Update localsync and syncclient to the latest release |
 
 **Client:**
 
@@ -97,22 +97,22 @@ syncclient --server ws://<host-ip>:<port>/ws
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--server` | *(required)* | WebSocket URL of the host (`ws://<host-ip>:<port>/ws`) |
-| `--variant` | | Variant name to play (skips interactive menu) |
+| `--server`, `-s` | *(required)* | WebSocket URL of the host (`ws://<host-ip>:<port>/ws`) |
+| `--variant`, `-V` | | Variant name to play (skips interactive menu) |
 | `--ipc` | `/tmp/mpvsync` (Unix) or `\\.\pipe\mpvsync` (Windows) | Path for the MPV IPC socket |
-| `--name` | `client` | Identifier sent with sync events (`host` or `client`) |
+| `--name`, `-n` | `client` | Identifier sent with sync events (`host` or `client`) |
 | `--no-launch` | `false` | Skip launching MPV (used internally by the host) |
-| `--version` | | Print version and exit |
-| `--update` | | Update localsync and syncclient to the latest release |
+| `--version`, `-v` | | Print version and exit |
+| `--update`, `-u` | | Update localsync and syncclient to the latest release |
 
-When variants are available, the client shows an interactive menu on connect:
+When variants are available, the client shows an interactive TUI selector:
 
 ```
-Available versions:
-  1. source (movie.mkv)
-  2. 720p_low (890 MB)
-  3. 720p_high (2.1 GB)
-Select [1]:
+> source    movie.mkv
+  720p_low  890 MB
+  720p_high 2.1 GB
+
+  [j/k] navigate  [enter] select  [esc] source
 ```
 
 ## Configuration
@@ -213,18 +213,21 @@ When a client's buffer runs dry due to insufficient bandwidth, the host is autom
 
 Clients buffer up to 100MB of content ahead to absorb short bandwidth dips.
 
-### Client Stats
+### Terminal UI
 
-While a client is connected, the host logs periodic stats every 3 seconds:
+Both host and client feature a live-updating terminal UI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
-```
---- Client Stats ---
-  client (192.168.1.5):
-    Speed: 2500 kbps | Buffer: 3.2s | Pos: 02:22.3
---------------------
-```
+**Host TUI** shows a header with server info, a live client stats table (speed, buffer time, buffer size, position), and a toggleable log panel capturing MPV output and sync events.
 
-This includes the client's download speed, buffer duration, and current playback position.
+**Client TUI** shows playback status (position, buffer, speed) and a toggleable log panel with MPV output.
+
+**Keybindings (both):**
+
+| Key | Action |
+|-----|--------|
+| `L` | Toggle log panel |
+| `j`/`k` | Scroll logs (when panel open) |
+| `Q` / `Ctrl+C` | Quit |
 
 ### Hardware encoding examples
 

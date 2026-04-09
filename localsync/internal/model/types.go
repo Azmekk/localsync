@@ -20,12 +20,13 @@ type Variant struct {
 
 // ClientInfo tracks a connected client's reported stats.
 type ClientInfo struct {
-	Name       string
-	IP         string
-	SpeedKbps  float64
-	BufferSecs float64
-	Pos        float64
-	LastUpdate time.Time
+	Name        string
+	IP          string
+	SpeedKbps   float64
+	BufferSecs  float64
+	BufferBytes int64
+	Pos         float64
+	LastUpdate  time.Time
 }
 
 // SyncMessage is the bidirectional sync protocol message.
@@ -39,9 +40,10 @@ type SyncMessage struct {
 
 // StatsMessage is sent periodically from client to server.
 type StatsMessage struct {
-	Event      string  `json:"event"`
-	Source     string  `json:"source"`
-	SpeedKbps  float64 `json:"speed_kbps"`
-	BufferSecs float64 `json:"buffer_secs"`
-	Pos        float64 `json:"pos"`
+	Event       string  `json:"event"`
+	Source      string  `json:"source"`
+	SpeedKbps   float64 `json:"speed_kbps"`
+	BufferSecs  float64 `json:"buffer_secs"`
+	BufferBytes int64   `json:"buffer_bytes"`
+	Pos         float64 `json:"pos"`
 }

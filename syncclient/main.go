@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
@@ -16,9 +17,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
+	"localsync/shared/logging"
 	"localsync/shared/update"
 )
 
@@ -46,11 +49,12 @@ type SyncMessage struct {
 }
 
 type StatsMessage struct {
-	Event      string  `json:"event"`
-	Source     string  `json:"source"`
-	SpeedKbps  float64 `json:"speed_kbps"`
-	BufferSecs float64 `json:"buffer_secs"`
-	Pos        float64 `json:"pos"`
+	Event       string  `json:"event"`
+	Source      string  `json:"source"`
+	SpeedKbps   float64 `json:"speed_kbps"`
+	BufferSecs  float64 `json:"buffer_secs"`
+	BufferBytes int64   `json:"buffer_bytes"`
+	Pos         float64 `json:"pos"`
 }
 
 var rootCmd = &cobra.Command{
@@ -60,13 +64,13 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.Flags().String("server", "", "ws://<host>:<port>/ws (required)")
+	rootCmd.Flags().StringP("server", "s", "", "ws://<host>:<port>/ws (required)")
 	rootCmd.Flags().String("ipc", defaultIPCPath(), "path for MPV IPC socket")
-	rootCmd.Flags().String("name", "client", "identifier sent with sync events")
-	rootCmd.Flags().String("variant", "", "variant name (skip interactive menu)")
+	rootCmd.Flags().StringP("name", "n", "client", "identifier sent with sync events")
+	rootCmd.Flags().StringP("variant", "V", "", "variant name (skip interactive menu)")
 	rootCmd.Flags().Bool("no-launch", false, "skip launching MPV (used by host)")
-	rootCmd.Flags().Bool("version", false, "print version and exit")
-	rootCmd.Flags().Bool("update", false, "update to the latest release")
+	rootCmd.Flags().BoolP("version", "v", false, "print version and exit")
+	rootCmd.Flags().BoolP("update", "u", false, "update to the latest release")
 	rootCmd.MarkFlagRequired("server")
 }
 
@@ -86,6 +90,15 @@ func run(cmd *cobra.Command, args []string) error {
 	doUpdate, _ := cmd.Flags().GetBool("update")
 	if doUpdate {
 		return update.SelfUpdate("syncclient")
+	}
+
+	// Set up file logging
+	logFile, logCleanup, err := logging.Setup("syncclient")
+	if err != nil {
+		log.Printf("warning: could not set up log file: %v", err)
+	} else {
+		defer logCleanup()
+		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 	}
 
 	updateCh := update.StartBackgroundCheck()
@@ -150,12 +163,17 @@ func run(cmd *cobra.Command, args []string) error {
 	var streamBaseURL string
 	var isSeekable bool
 
+	var selectedVariantName string
 	if !noLaunch && len(initMsg.Variants) > 0 && variantFlag == "" {
-		// Interactive variant selection
-		selected := promptVariantSelection(server, initMsg)
+		// Interactive variant selection via TUI
+		selected, err := SelectVariant(initMsg)
+		if err != nil {
+			return fmt.Errorf("variant selection failed: %w", err)
+		}
 		if selected != nil {
 			streamBaseURL = deriveVariantURL(server, selected.Filename)
 			isSeekable = true
+			selectedVariantName = selected.Name
 			log.Printf("selected variant: %s", selected.Name)
 		} else {
 			streamBaseURL = deriveStreamURL(server, initMsg.Quality)
@@ -165,10 +183,18 @@ func run(cmd *cobra.Command, args []string) error {
 		// Variant specified via flag
 		streamBaseURL = deriveVariantURL(server, findVariantFilename(initMsg.Variants, variantFlag))
 		isSeekable = true
+		selectedVariantName = variantFlag
 		log.Printf("using variant: %s", variantFlag)
 	} else {
 		streamBaseURL = deriveStreamURL(server, initMsg.Quality)
 		isSeekable = initMsg.Quality == "source" || initMsg.Quality == "passthrough"
+	}
+
+	// Playback TUI (created before MPV so we can pipe output)
+	var pbProgram *tea.Program
+	if !noLaunch {
+		pbModel := newPlaybackModel(initMsg.File, server, selectedVariantName)
+		pbProgram = tea.NewProgram(pbModel)
 	}
 
 	if !noLaunch {
@@ -191,15 +217,30 @@ func run(cmd *cobra.Command, args []string) error {
 		mpvArgs = append(mpvArgs, launchURL)
 
 		mpvCmd := exec.Command("mpv", mpvArgs...)
-		mpvCmd.Stdout = os.Stdout
-		mpvCmd.Stderr = os.Stderr
+		// Pipe MPV output to TUI log panel + log file
+		var mpvWriters []io.Writer
+		if pbProgram != nil {
+			mpvWriters = append(mpvWriters, &tuiLogWriter{program: pbProgram})
+		}
+		if logFile != nil {
+			mpvWriters = append(mpvWriters, logFile)
+		}
+		if len(mpvWriters) > 0 {
+			w := io.MultiWriter(mpvWriters...)
+			mpvCmd.Stdout = w
+			mpvCmd.Stderr = w
+		}
 		if err := mpvCmd.Start(); err != nil {
 			return fmt.Errorf("failed to launch mpv: %w", err)
 		}
 		go func() {
 			mpvCmd.Wait()
-			log.Println("MPV exited")
-			os.Exit(0)
+			if pbProgram != nil {
+				pbProgram.Send(logMsg("MPV exited"))
+				// Give TUI a moment to show the message, then quit
+				time.Sleep(500 * time.Millisecond)
+				pbProgram.Send(tea.Quit())
+			}
 		}()
 	}
 
@@ -209,6 +250,16 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("MPV IPC socket not available: %w", err)
 	}
 	defer ipcConn.Close()
+
+	// Redirect log output to TUI + log file
+	if pbProgram != nil {
+		tuiWriter := &tuiLogWriter{program: pbProgram}
+		if logFile != nil {
+			log.SetOutput(io.MultiWriter(tuiWriter, logFile))
+		} else {
+			log.SetOutput(tuiWriter)
+		}
+	}
 	log.Println("connected to MPV IPC")
 
 	// Subscribe to properties
@@ -226,6 +277,7 @@ func run(cmd *cobra.Command, args []string) error {
 		restartPauseAfter   int32
 		cacheSpeed          float64
 		cacheDuration       float64
+		cacheBytes          int64
 		cacheSpeedMu        sync.Mutex
 		lastSeekTime        time.Time
 		lastSeekPos         float64
@@ -252,22 +304,35 @@ func run(cmd *cobra.Command, args []string) error {
 				case <-statsDone:
 					return
 				case <-ticker.C:
+					// Poll for buffer bytes
+					ipcWrite(ipcConn, `{"command":["get_property","demuxer-cache-state"],"request_id":100}`)
 					posMu.Lock()
 					pos := lastSeekPos
 					posMu.Unlock()
 					cacheSpeedMu.Lock()
 					speedKbps := cacheSpeed * 8 / 1000
 					bufSecs := cacheDuration
+					bufBytes := cacheBytes
 					cacheSpeedMu.Unlock()
 					msg := StatsMessage{
-						Event:      "stats",
-						Source:     name,
-						SpeedKbps:  speedKbps,
-						BufferSecs: bufSecs,
-						Pos:        pos,
+						Event:       "stats",
+						Source:      name,
+						SpeedKbps:   speedKbps,
+						BufferSecs:  bufSecs,
+						BufferBytes: bufBytes,
+						Pos:         pos,
 					}
 					data, _ := json.Marshal(msg)
 					wsWrite(data)
+					// Update TUI
+					if pbProgram != nil {
+						pbProgram.Send(statsUpdate{
+							Pos:         pos,
+							BufferSecs:  bufSecs,
+							BufferBytes: bufBytes,
+							SpeedKbps:   speedKbps,
+						})
+					}
 				}
 			}
 		}()
@@ -501,120 +566,122 @@ func run(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else {
-		scanner := bufio.NewScanner(ipcConn)
-		for scanner.Scan() {
-			line := scanner.Text()
+		clientIPCLoop := func() {
+			scanner := bufio.NewScanner(ipcConn)
+			for scanner.Scan() {
+				line := scanner.Text()
 
-			var event map[string]interface{}
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				continue
-			}
-
-			eventName, _ := event["event"].(string)
-
-			if eventName == "playback-restart" {
-				if atomic.CompareAndSwapInt32(&waitingForRestart, 1, 0) {
-					log.Println("playback-restart received, signaling ready")
-					if atomic.CompareAndSwapInt32(&restartPauseAfter, 1, 0) {
-						ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
-					}
-					atomic.AddInt32(&applyingCount, -1)
-					readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: name})
-					wsWrite(readyMsg)
-				}
-				continue
-			}
-
-			if eventName != "property-change" {
-				continue
-			}
-
-			propName, _ := event["name"].(string)
-			switch propName {
-			case "time-pos":
-				if pos, ok := event["data"].(float64); ok {
-					posMu.Lock()
-					lastSeekPos = pos
-					posMu.Unlock()
-				}
-			case "cache-speed":
-				if speed, ok := event["data"].(float64); ok {
-					cacheSpeedMu.Lock()
-					cacheSpeed = speed
-					cacheSpeedMu.Unlock()
-				}
-			case "demuxer-cache-duration":
-				if dur, ok := event["data"].(float64); ok {
-					cacheSpeedMu.Lock()
-					cacheDuration = dur
-					cacheSpeedMu.Unlock()
-				}
-			case "paused-for-cache":
-				paused, ok := event["data"].(bool)
-				if !ok {
+				var event map[string]interface{}
+				if err := json.Unmarshal([]byte(line), &event); err != nil {
 					continue
 				}
-				if paused {
-					cacheSpeedMu.Lock()
-					speedKbps := cacheSpeed * 8 / 1000
-					cacheSpeedMu.Unlock()
-					bufMsg := SyncMessage{
-						Event:  "buffering",
-						State:  &paused,
-						Speed:  &speedKbps,
-						Source: name,
+
+				// Handle demuxer-cache-state response (request_id: 100)
+				if reqID, ok := event["request_id"].(float64); ok && int(reqID) == 100 {
+					if data, ok := event["data"].(map[string]interface{}); ok {
+						if fwBytes, ok := data["fw-bytes"].(float64); ok {
+							cacheSpeedMu.Lock()
+							cacheBytes = int64(fwBytes)
+							cacheSpeedMu.Unlock()
+						}
 					}
-					data, _ := json.Marshal(bufMsg)
-					wsWrite(data)
-					log.Printf("buffering — download speed: %.0f kbps", speedKbps)
-				} else {
-					notPaused := false
-					bufMsg := SyncMessage{
-						Event:  "buffering",
-						State:  &notPaused,
-						Source: name,
+					continue
+				}
+
+				eventName, _ := event["event"].(string)
+
+				if eventName == "playback-restart" {
+					if atomic.CompareAndSwapInt32(&waitingForRestart, 1, 0) {
+						log.Println("playback-restart received, signaling ready")
+						if atomic.CompareAndSwapInt32(&restartPauseAfter, 1, 0) {
+							ipcWrite(ipcConn, `{"command":["set_property","pause",true]}`)
+						}
+						atomic.AddInt32(&applyingCount, -1)
+						readyMsg, _ := json.Marshal(SyncMessage{Event: "ready", Source: name})
+						wsWrite(readyMsg)
 					}
-					data, _ := json.Marshal(bufMsg)
-					wsWrite(data)
-					log.Println("buffer recovered")
+					continue
+				}
+
+				if eventName != "property-change" {
+					continue
+				}
+
+				propName, _ := event["name"].(string)
+				switch propName {
+				case "time-pos":
+					if pos, ok := event["data"].(float64); ok {
+						posMu.Lock()
+						lastSeekPos = pos
+						posMu.Unlock()
+					}
+				case "cache-speed":
+					if speed, ok := event["data"].(float64); ok {
+						cacheSpeedMu.Lock()
+						cacheSpeed = speed
+						cacheSpeedMu.Unlock()
+					}
+				case "demuxer-cache-duration":
+					if dur, ok := event["data"].(float64); ok {
+						cacheSpeedMu.Lock()
+						cacheDuration = dur
+						cacheSpeedMu.Unlock()
+					}
+				case "paused-for-cache":
+					paused, ok := event["data"].(bool)
+					if !ok {
+						continue
+					}
+					if paused {
+						cacheSpeedMu.Lock()
+						speedKbps := cacheSpeed * 8 / 1000
+						cacheSpeedMu.Unlock()
+						bufMsg := SyncMessage{
+							Event:  "buffering",
+							State:  &paused,
+							Speed:  &speedKbps,
+							Source: name,
+						}
+						data, _ := json.Marshal(bufMsg)
+						wsWrite(data)
+						log.Printf("buffering — download speed: %.0f kbps", speedKbps)
+						if pbProgram != nil {
+							pbProgram.Send(syncEventMsg(fmt.Sprintf("Buffering (%.0f kbps)", speedKbps)))
+						}
+					} else {
+						notPaused := false
+						bufMsg := SyncMessage{
+							Event:  "buffering",
+							State:  &notPaused,
+							Source: name,
+						}
+						data, _ := json.Marshal(bufMsg)
+						wsWrite(data)
+						log.Println("buffer recovered")
+					}
 				}
 			}
+		}
+
+		if pbProgram != nil {
+			// Run IPC loop in background, TUI blocks
+			go clientIPCLoop()
+		} else {
+			// No TUI — IPC loop blocks
+			clientIPCLoop()
 		}
 	}
 
 	close(statsDone)
+
+	// Run playback TUI if active (blocking call)
+	if pbProgram != nil {
+		_, err := pbProgram.Run()
+		return err
+	}
 	return nil
 }
 
-func promptVariantSelection(serverWS string, initMsg InitMessage) *Variant {
-	fmt.Println()
-	fmt.Println("Available versions:")
-	fmt.Printf("  1. source (%s)\n", initMsg.File)
-	for i, v := range initMsg.Variants {
-		sizeMB := float64(v.Size) / (1024 * 1024)
-		fmt.Printf("  %d. %s (%.0f MB)\n", i+2, v.Name, sizeMB)
-	}
-	fmt.Print("Select [1]: ")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	if input == "" || input == "1" {
-		return nil // source
-	}
-
-	var choice int
-	if _, err := fmt.Sscanf(input, "%d", &choice); err != nil || choice < 1 || choice > len(initMsg.Variants)+1 {
-		log.Printf("invalid selection, defaulting to source")
-		return nil
-	}
-
-	if choice == 1 {
-		return nil
-	}
-	return &initMsg.Variants[choice-2]
-}
 
 func findVariantFilename(variants []Variant, name string) string {
 	for _, v := range variants {

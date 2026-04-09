@@ -168,6 +168,7 @@ func (h *Hub) UpdateClientStats(conn *websocket.Conn, raw []byte) {
 	info.Name = stats.Source
 	info.SpeedKbps = stats.SpeedKbps
 	info.BufferSecs = stats.BufferSecs
+	info.BufferBytes = stats.BufferBytes
 	info.Pos = stats.Pos
 	info.LastUpdate = time.Now()
 }
