@@ -1,59 +1,30 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import "github.com/gdamore/tcell/v2"
 
 var (
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa")).
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444444")).
-			Padding(0, 1)
-
-	tableHeaderStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#888888"))
-
-	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888")).
-			Background(lipgloss.Color("#1a1a2e"))
-
-	keyStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa"))
-
-	logPanelBorder = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#333333"))
-
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
-
-	goodStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#00d4aa"))
-
-	warnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ffaa00"))
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ff4444"))
-
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa"))
-
-	badgeStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#ff4444"))
+	colorCyan    = tcell.ColorDarkCyan
+	colorGreen   = tcell.NewRGBColor(0, 212, 170)
+	colorYellow  = tcell.ColorYellow
+	colorRed     = tcell.ColorRed
+	colorDim     = tcell.ColorDimGray
+	colorWhite   = tcell.ColorWhite
 )
 
-func speedStyle(kbps float64) lipgloss.Style {
+func speedColor(kbps float64) tcell.Color {
 	switch {
 	case kbps >= 3000:
-		return goodStyle
+		return colorGreen
 	case kbps >= 1000:
-		return warnStyle
+		return colorYellow
 	default:
-		return errorStyle
+		return colorRed
 	}
+}
+
+func bufferColor(secs float64) tcell.Color {
+	if secs < 3 {
+		return colorYellow
+	}
+	return colorGreen
 }

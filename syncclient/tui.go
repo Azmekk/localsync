@@ -3,175 +3,83 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
 
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
-// --- Styles ---
+// --- Log Writer ---
 
-var (
-	tuiHeaderStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa")).
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444444")).
-			Padding(0, 1)
-
-	tuiDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
-
-	tuiKeyStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa"))
-
-	tuiGoodStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#00d4aa"))
-
-	tuiWarnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ffaa00"))
-
-	tuiErrorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ff4444"))
-
-	tuiStatusBarStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888888")).
-				Background(lipgloss.Color("#1a1a2e"))
-
-	tuiBadgeStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#ff4444"))
-
-	tuiSelectedStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#00d4aa"))
-
-	tuiCursorStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00d4aa"))
-)
-
-// --- Variant Selector TUI ---
-
-type selectorModel struct {
-	items    []selectorItem
-	cursor   int
-	selected *Variant
-	done     bool
+type tuiLogWriter struct {
+	view *tview.TextView
+	app  *tview.Application
 }
 
-type selectorItem struct {
-	name    string
-	desc    string
-	variant *Variant // nil = source
-}
-
-func newSelectorModel(initMsg InitMessage) selectorModel {
-	items := []selectorItem{
-		{name: "source", desc: initMsg.File},
+func (w *tuiLogWriter) Write(p []byte) (int, error) {
+	text := strings.TrimRight(string(p), "\n")
+	if text == "" {
+		return len(p), nil
 	}
+	fmtText := text + "\n"
+	go w.app.QueueUpdateDraw(func() {
+		w.view.Write([]byte(fmtText))
+	})
+	return len(p), nil
+}
+
+// --- Variant Selector ---
+
+// SelectVariant shows a tview list for variant selection. Returns nil for source.
+func SelectVariant(initMsg InitMessage) (*Variant, error) {
+	app := tview.NewApplication()
+	var selected *Variant
+
+	list := tview.NewList().
+		ShowSecondaryText(true).
+		SetHighlightFullLine(true).
+		SetSelectedBackgroundColor(tcell.ColorDarkCyan)
+
+	// Add source option
+	list.AddItem("source", initMsg.File, '1', func() {
+		selected = nil
+		app.Stop()
+	})
+
+	// Add variants
 	for i := range initMsg.Variants {
 		v := &initMsg.Variants[i]
 		sizeMB := float64(v.Size) / (1024 * 1024)
-		items = append(items, selectorItem{
-			name:    v.Name,
-			desc:    fmt.Sprintf("%.0f MB", sizeMB),
-			variant: v,
+		variant := v // capture
+		list.AddItem(v.Name, fmt.Sprintf("%.0f MB", sizeMB), rune('2'+i), func() {
+			selected = variant
+			app.Stop()
 		})
 	}
-	return selectorModel{items: items}
-}
 
-func (m selectorModel) Init() tea.Cmd { return nil }
+	list.SetTitle(" Select Video Variant ").
+		SetTitleColor(tcell.ColorDarkCyan).
+		SetBorder(true).
+		SetBorderColor(tcell.ColorDimGray).
+		SetBorderPadding(1, 1, 2, 2)
 
-func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.items)-1 {
-				m.cursor++
-			}
-		case "enter":
-			m.selected = m.items[m.cursor].variant
-			m.done = true
-			return m, tea.Quit
-		case "escape", "q":
-			m.done = true
-			return m, tea.Quit
-		case "ctrl+c":
-			return m, tea.Quit
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			selected = nil
+			app.Stop()
+			return nil
 		}
-	}
-	return m, nil
-}
+		return event
+	})
 
-func (m selectorModel) View() tea.View {
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(tuiHeaderStyle.Render(" Select Video Variant "))
-	b.WriteString("\n\n")
-
-	for i, item := range m.items {
-		cursor := "  "
-		nameStyle := tuiDimStyle
-		if i == m.cursor {
-			cursor = tuiCursorStyle.Render("> ")
-			nameStyle = tuiSelectedStyle
-		}
-		b.WriteString(fmt.Sprintf("  %s%s  %s\n",
-			cursor,
-			nameStyle.Render(item.name),
-			tuiDimStyle.Render(item.desc),
-		))
-	}
-
-	b.WriteString("\n")
-	b.WriteString(tuiDimStyle.Render("  [j/k] navigate  [enter] select  [esc] source"))
-	b.WriteString("\n")
-
-	v := tea.NewView(b.String())
-	v.AltScreen = true
-	return v
-}
-
-// SelectVariant runs the variant selector TUI and returns the selected variant.
-// Returns nil for source.
-func SelectVariant(initMsg InitMessage) (*Variant, error) {
-	m := newSelectorModel(initMsg)
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
-	if err != nil {
+	app.SetRoot(list, true)
+	if err := app.Run(); err != nil {
 		return nil, err
 	}
-	result := finalModel.(selectorModel)
-	return result.selected, nil
+	return selected, nil
 }
 
 // --- Playback TUI ---
 
-type logMsg string
-
-type tuiLogWriter struct {
-	program *tea.Program
-}
-
-func (w *tuiLogWriter) Write(p []byte) (int, error) {
-	lines := strings.Split(strings.TrimRight(string(p), "\n"), "\n")
-	for _, line := range lines {
-		if line != "" {
-			w.program.Send(logMsg(line))
-		}
-	}
-	return len(p), nil
-}
-
-// statsUpdate is sent from the IPC/WS goroutines to update the TUI.
 type statsUpdate struct {
 	Pos         float64
 	BufferSecs  float64
@@ -182,215 +90,170 @@ type statsUpdate struct {
 
 type syncEventMsg string
 
-type playbackTickMsg time.Time
-
-type playbackModel struct {
-	file        string
-	host        string
-	variantName string
-
-	pos         float64
-	bufferSecs  float64
-	bufferBytes int64
-	speedKbps   float64
-	paused      bool
-
-	logs      []string
+// PlaybackTUI holds the tview components for the client playback screen.
+type PlaybackTUI struct {
+	App       *tview.Application
+	LogWriter *tuiLogWriter
+	logView   *tview.TextView
+	statusView *tview.TextView
+	pages     *tview.Pages
 	showLogs  bool
 	newLogs   int
-	logScroll int
-	width     int
-	height    int
-
-	statusMsg  string
-	statusTime time.Time
+	statusBar *tview.TextView
 }
 
-func newPlaybackModel(file, host, variantName string) playbackModel {
-	return playbackModel{
-		file:        file,
-		host:        host,
-		variantName: variantName,
+func NewPlaybackTUI(file, host, variantName string) *PlaybackTUI {
+	app := tview.NewApplication()
+
+	// Header
+	headerText := fmt.Sprintf("[::b][#00d4aa]syncclient[-]  |  %s  |  %s", host, file)
+	if variantName != "" {
+		headerText += fmt.Sprintf("  |  variant: %s", variantName)
+	}
+	header := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText(headerText)
+	header.SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
+
+	// Status panel
+	statusView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText("  [::b]Status:[-]   Connecting...\n  [::b]Position:[-] 00:00\n  [::b]Buffer:[-]   0.0s  |  0 B\n  [::b]Speed:[-]    -- kbps")
+	statusView.SetTitle(" Playback ").SetTitleColor(tcell.ColorDarkCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
+
+	// Log view
+	logView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetMaxLines(500)
+	logView.SetTitle(" Logs ").SetTitleColor(tcell.ColorDarkCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
+
+	logWriter := &tuiLogWriter{view: logView, app: app}
+
+	// Status bar
+	statusBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText(" [#00d4aa::b][L][-::-] Logs  |  [#00d4aa::b][Q][-::-] Quit")
+
+	// Layouts
+	mainLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(header, 3, 0, false).
+		AddItem(statusView, 6, 0, false).
+		AddItem(tview.NewBox(), 0, 1, false). // spacer
+		AddItem(statusBar, 1, 0, false)
+
+	logsLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(header, 3, 0, false).
+		AddItem(statusView, 6, 0, false).
+		AddItem(logView, 0, 1, false).
+		AddItem(statusBar, 1, 0, false)
+
+	pages := tview.NewPages().
+		AddPage("main", mainLayout, true, true).
+		AddPage("logs", logsLayout, true, false)
+
+	pt := &PlaybackTUI{
+		App:        app,
+		LogWriter:  logWriter,
+		logView:    logView,
+		statusView: statusView,
+		pages:      pages,
+		statusBar:  statusBar,
+	}
+
+	// Track new logs
+	logView.SetChangedFunc(func() {
+		if !pt.showLogs {
+			pt.newLogs++
+			app.QueueUpdateDraw(func() {
+				pt.updateStatusBar()
+			})
+		}
+	})
+
+	// Key handler
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 'q', 'Q':
+			app.Stop()
+			return nil
+		case 'l', 'L':
+			pt.showLogs = !pt.showLogs
+			if pt.showLogs {
+				pt.newLogs = 0
+				pages.SwitchToPage("logs")
+			} else {
+				pages.SwitchToPage("main")
+			}
+			pt.updateStatusBar()
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlC {
+			app.Stop()
+			return nil
+		}
+		return event
+	})
+
+	app.SetRoot(pages, true)
+	return pt
+}
+
+func (pt *PlaybackTUI) updateStatusBar() {
+	if pt.showLogs {
+		pt.statusBar.SetText(" [#00d4aa::b][L][-::-] Hide Logs  |  [#00d4aa::b][Q][-::-] Quit")
+	} else {
+		badge := ""
+		if pt.newLogs > 0 {
+			badge = fmt.Sprintf("  [red::b](%d new)[-::-]", pt.newLogs)
+		}
+		pt.statusBar.SetText(fmt.Sprintf(" [#00d4aa::b][L][-::-] Logs%s  |  [#00d4aa::b][Q][-::-] Quit", badge))
 	}
 }
 
-func playbackTickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return playbackTickMsg(t)
+// UpdateStats updates the playback status display.
+func (pt *PlaybackTUI) UpdateStats(s statsUpdate) {
+	go pt.App.QueueUpdateDraw(func() {
+		playState := "[#00d4aa]Playing[-]"
+		if s.Paused {
+			playState = "[yellow]Paused[-]"
+		}
+
+		speedText := "[#555555]-- kbps[-]"
+		if s.SpeedKbps > 0 {
+			color := "#00d4aa"
+			if s.SpeedKbps < 1000 {
+				color = "#ff4444"
+			} else if s.SpeedKbps < 3000 {
+				color = "yellow"
+			}
+			speedText = fmt.Sprintf("[%s]%.0f kbps[-]", color, s.SpeedKbps)
+		}
+
+		bufColor := "#00d4aa"
+		if s.BufferSecs < 3 {
+			bufColor = "yellow"
+		}
+		if s.BufferSecs <= 0 {
+			bufColor = "#ff4444"
+		}
+
+		pt.statusView.SetText(fmt.Sprintf(
+			"  [::b]Status:[-]   %s\n  [::b]Position:[-] %s\n  [::b]Buffer:[-]   [%s]%.1fs[-]  |  %s\n  [::b]Speed:[-]    %s",
+			playState,
+			formatPlaybackTime(s.Pos),
+			bufColor, s.BufferSecs,
+			formatPlaybackBytes(s.BufferBytes),
+			speedText,
+		))
 	})
 }
 
-func (m playbackModel) Init() tea.Cmd {
-	return playbackTickCmd()
-}
-
-func (m playbackModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "l", "L":
-			m.showLogs = !m.showLogs
-			if m.showLogs {
-				m.newLogs = 0
-				m.logScroll = max(0, len(m.logs)-m.logPanelHeight())
-			}
-		case "up", "k":
-			if m.showLogs && m.logScroll > 0 {
-				m.logScroll--
-			}
-		case "down", "j":
-			if m.showLogs {
-				maxScroll := max(0, len(m.logs)-m.logPanelHeight())
-				if m.logScroll < maxScroll {
-					m.logScroll++
-				}
-			}
-		}
-
-	case playbackTickMsg:
-		// Clear stale status messages
-		if m.statusMsg != "" && time.Since(m.statusTime) > 3*time.Second {
-			m.statusMsg = ""
-		}
-		return m, playbackTickCmd()
-
-	case statsUpdate:
-		m.pos = msg.Pos
-		m.bufferSecs = msg.BufferSecs
-		m.bufferBytes = msg.BufferBytes
-		m.speedKbps = msg.SpeedKbps
-		m.paused = msg.Paused
-
-	case syncEventMsg:
-		m.statusMsg = string(msg)
-		m.statusTime = time.Now()
-
-	case logMsg:
-		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > 500 {
-			m.logs = m.logs[len(m.logs)-500:]
-		}
-		if !m.showLogs {
-			m.newLogs++
-		} else {
-			maxScroll := max(0, len(m.logs)-m.logPanelHeight())
-			if m.logScroll >= maxScroll-1 {
-				m.logScroll = maxScroll
-			}
-		}
-	}
-
-	return m, nil
-}
-
-func (m playbackModel) View() tea.View {
-	if m.width == 0 {
-		return tea.NewView("Initializing...")
-	}
-
-	var b strings.Builder
-
-	// Header
-	header := fmt.Sprintf(" syncclient  |  %s  |  %s", m.host, m.file)
-	if m.variantName != "" {
-		header += fmt.Sprintf("  |  variant: %s", m.variantName)
-	}
-	b.WriteString(tuiHeaderStyle.Width(m.width - 2).Render(header))
-	b.WriteString("\n\n")
-
-	// Status panel
-	playState := tuiGoodStyle.Render("Playing")
-	if m.paused {
-		playState = tuiWarnStyle.Render("Paused")
-	}
-	b.WriteString(fmt.Sprintf("  %s  %s\n", lipgloss.NewStyle().Bold(true).Render("Status:"), playState))
-	b.WriteString(fmt.Sprintf("  %s  %s\n",
-		lipgloss.NewStyle().Bold(true).Render("Position:"),
-		formatPlaybackTime(m.pos)))
-	b.WriteString(fmt.Sprintf("  %s  %s  |  %s\n",
-		lipgloss.NewStyle().Bold(true).Render("Buffer:"),
-		formatPlaybackBuffer(m.bufferSecs),
-		formatPlaybackBytes(m.bufferBytes)))
-	b.WriteString(fmt.Sprintf("  %s  %s\n",
-		lipgloss.NewStyle().Bold(true).Render("Speed:"),
-		formatPlaybackSpeed(m.speedKbps)))
-
-	// Sync event
-	if m.statusMsg != "" {
-		b.WriteString("\n")
-		b.WriteString(tuiWarnStyle.Render("  " + m.statusMsg))
-		b.WriteString("\n")
-	}
-
-	// Log panel
-	if m.showLogs {
-		logHeight := m.logPanelHeight()
-		if logHeight > 0 {
-			b.WriteString("\n")
-			b.WriteString(tuiDimStyle.Render("  Logs"))
-			b.WriteString("\n")
-
-			start := m.logScroll
-			end := start + logHeight
-			if end > len(m.logs) {
-				end = len(m.logs)
-			}
-			if start > len(m.logs) {
-				start = len(m.logs)
-			}
-
-			for i := start; i < end; i++ {
-				line := m.logs[i]
-				if len(line) > m.width-4 {
-					line = line[:m.width-4]
-				}
-				b.WriteString(tuiDimStyle.Render("  " + line))
-				b.WriteString("\n")
-			}
-		}
-	}
-
-	// Pad to bottom
-	currentLines := strings.Count(b.String(), "\n") + 2
-	for i := currentLines; i < m.height-1; i++ {
-		b.WriteString("\n")
-	}
-
-	// Status bar
-	logsKey := tuiKeyStyle.Render("[L]") + " Logs"
-	if m.newLogs > 0 {
-		logsKey += " " + tuiBadgeStyle.Render(fmt.Sprintf("(%d new)", m.newLogs))
-	}
-	if m.showLogs {
-		logsKey = tuiKeyStyle.Render("[L]") + " Hide Logs  " +
-			tuiDimStyle.Render("[j/k]") + " Scroll"
-	}
-	quitKey := tuiKeyStyle.Render("[Q]") + " Quit"
-	statusBar := fmt.Sprintf(" %s  |  %s", logsKey, quitKey)
-	b.WriteString(tuiStatusBarStyle.Width(m.width).Render(statusBar))
-
-	v := tea.NewView(b.String())
-	v.AltScreen = true
-	return v
-}
-
-func (m playbackModel) logPanelHeight() int {
-	reserved := 12
-	available := m.height - reserved
-	if available < 3 {
-		return 3
-	}
-	half := m.height / 2
-	if available > half {
-		return half
-	}
-	return available
+// ShowSyncEvent shows a transient sync event message in the logs.
+func (pt *PlaybackTUI) ShowSyncEvent(msg string) {
+	go pt.App.QueueUpdateDraw(func() {
+		pt.logView.Write([]byte("[yellow]" + msg + "[-]\n"))
+	})
 }
 
 func formatPlaybackTime(secs float64) string {
@@ -407,16 +270,6 @@ func formatPlaybackTime(secs float64) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-func formatPlaybackBuffer(secs float64) string {
-	if secs <= 0 {
-		return tuiErrorStyle.Render("0.0s")
-	}
-	if secs < 3 {
-		return tuiWarnStyle.Render(fmt.Sprintf("%.1fs", secs))
-	}
-	return tuiGoodStyle.Render(fmt.Sprintf("%.1fs", secs))
-}
-
 func formatPlaybackBytes(bytes int64) string {
 	if bytes <= 0 {
 		return "0 B"
@@ -430,19 +283,5 @@ func formatPlaybackBytes(bytes int64) string {
 		return fmt.Sprintf("%.0f KB", float64(bytes)/float64(kb))
 	default:
 		return fmt.Sprintf("%d B", bytes)
-	}
-}
-
-func formatPlaybackSpeed(kbps float64) string {
-	switch {
-	case kbps >= 3000:
-		return tuiGoodStyle.Render(fmt.Sprintf("%.0f kbps", kbps))
-	case kbps >= 1000:
-		return tuiWarnStyle.Render(fmt.Sprintf("%.0f kbps", kbps))
-	default:
-		if kbps > 0 {
-			return tuiErrorStyle.Render(fmt.Sprintf("%.0f kbps", kbps))
-		}
-		return tuiDimStyle.Render("-- kbps")
 	}
 }

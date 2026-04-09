@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
@@ -191,10 +190,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Playback TUI (created before MPV so we can pipe output)
-	var pbProgram *tea.Program
+	var pbTUI *PlaybackTUI
 	if !noLaunch {
-		pbModel := newPlaybackModel(initMsg.File, server, selectedVariantName)
-		pbProgram = tea.NewProgram(pbModel)
+		pbTUI = NewPlaybackTUI(initMsg.File, server, selectedVariantName)
 	}
 
 	if !noLaunch {
@@ -219,8 +217,8 @@ func run(cmd *cobra.Command, args []string) error {
 		mpvCmd := exec.Command("mpv", mpvArgs...)
 		// Pipe MPV output to TUI log panel + log file
 		var mpvWriters []io.Writer
-		if pbProgram != nil {
-			mpvWriters = append(mpvWriters, &tuiLogWriter{program: pbProgram})
+		if pbTUI != nil {
+			mpvWriters = append(mpvWriters, pbTUI.LogWriter)
 		}
 		if logFile != nil {
 			mpvWriters = append(mpvWriters, logFile)
@@ -235,11 +233,10 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 		go func() {
 			mpvCmd.Wait()
-			if pbProgram != nil {
-				pbProgram.Send(logMsg("MPV exited"))
-				// Give TUI a moment to show the message, then quit
+			if pbTUI != nil {
+				pbTUI.ShowSyncEvent("MPV exited")
 				time.Sleep(500 * time.Millisecond)
-				pbProgram.Send(tea.Quit())
+				pbTUI.App.Stop()
 			}
 		}()
 	}
@@ -252,12 +249,11 @@ func run(cmd *cobra.Command, args []string) error {
 	defer ipcConn.Close()
 
 	// Redirect log output to TUI + log file
-	if pbProgram != nil {
-		tuiWriter := &tuiLogWriter{program: pbProgram}
+	if pbTUI != nil {
 		if logFile != nil {
-			log.SetOutput(io.MultiWriter(tuiWriter, logFile))
+			log.SetOutput(io.MultiWriter(pbTUI.LogWriter, logFile))
 		} else {
-			log.SetOutput(tuiWriter)
+			log.SetOutput(pbTUI.LogWriter)
 		}
 	}
 	log.Println("connected to MPV IPC")
@@ -325,8 +321,8 @@ func run(cmd *cobra.Command, args []string) error {
 					data, _ := json.Marshal(msg)
 					wsWrite(data)
 					// Update TUI
-					if pbProgram != nil {
-						pbProgram.Send(statsUpdate{
+					if pbTUI != nil {
+						pbTUI.UpdateStats(statsUpdate{
 							Pos:         pos,
 							BufferSecs:  bufSecs,
 							BufferBytes: bufBytes,
@@ -645,8 +641,8 @@ func run(cmd *cobra.Command, args []string) error {
 						data, _ := json.Marshal(bufMsg)
 						wsWrite(data)
 						log.Printf("buffering — download speed: %.0f kbps", speedKbps)
-						if pbProgram != nil {
-							pbProgram.Send(syncEventMsg(fmt.Sprintf("Buffering (%.0f kbps)", speedKbps)))
+						if pbTUI != nil {
+							pbTUI.ShowSyncEvent(fmt.Sprintf("Buffering (%.0f kbps)", speedKbps))
 						}
 					} else {
 						notPaused := false
@@ -663,7 +659,7 @@ func run(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if pbProgram != nil {
+		if pbTUI != nil {
 			// Run IPC loop in background, TUI blocks
 			go clientIPCLoop()
 		} else {
@@ -672,13 +668,14 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	close(statsDone)
-
 	// Run playback TUI if active (blocking call)
-	if pbProgram != nil {
-		_, err := pbProgram.Run()
+	if pbTUI != nil {
+		err := pbTUI.App.Run()
+		close(statsDone)
 		return err
 	}
+
+	close(statsDone)
 	return nil
 }
 

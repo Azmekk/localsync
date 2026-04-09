@@ -29,7 +29,7 @@ There are no tests, no linter config, and no CI beyond the release workflow.
 
 ## Architecture
 
-Two separate binaries sharing the `shared/update` package. Uses **Cobra** for CLI, **Chi** for HTTP routing, and **Bubble Tea v2** for terminal UI.
+Two separate binaries sharing the `shared/update` package. Uses **Cobra** for CLI, **Chi** for HTTP routing, and **tview** for terminal UI.
 
 ### Server (`localsync/`)
 - **main.go**: Cobra root command, Chi router wiring, launches host MPV + syncclient subprocess. Routes: `/stream` (video), `/ws` (sync WebSocket), `/variant/{name}` (pre-compressed variants).
@@ -39,13 +39,13 @@ Two separate binaries sharing the `shared/update` package. Uses **Cobra** for CL
 - **internal/handler/stream.go**: `/stream` handler (passthrough via `http.ServeContent` or FFmpeg transcode). `/variant/{name}` handler serving pre-compressed files from `.localsync/` folder.
 - **internal/service/hub.go**: WebSocket broadcast hub holding `SessionState`. Sends `init` event to newly connected clients. Broadcasts sync messages between peers (never echoes back to sender). Tracks per-client stats.
 - **internal/service/variants.go**: Scans `.localsync/` folder next to video for pre-compressed variant files. `CreateMediaFolder` creates the folder structure.
-- **internal/tui/host.go**: Bubble Tea v2 alt-screen TUI — header, live client stats table, toggleable log panel. Replaces log-based stats display.
+- **internal/tui/host.go**: tview alt-screen TUI — header, live client stats table, toggleable log panel. Replaces log-based stats display.
 - **internal/tui/logwriter.go**: `io.Writer` adapter routing `log.Printf` and MPV output into the TUI log panel.
-- **internal/tui/styles.go**: Lipgloss style definitions shared across TUI components.
+- **internal/tui/styles.go**: tcell color definitions shared across TUI components.
 
 ### Client (`syncclient/`)
 - **main.go**: Cobra CLI. Connects to host WS, receives `init` message with available variants, launches MPV, bridges MPV IPC <-> WebSocket for bidirectional sync. Sends periodic stats reports (2s) including buffer bytes. Uses atomic `applyingCount` to prevent echo loops.
-- **tui.go**: Bubble Tea v2 TUI components — variant selector (arrow-key list picker), playback monitor (live stats + toggleable log panel). MPV output piped to log panel.
+- **tui.go**: tview TUI components — variant selector (arrow-key list picker), playback monitor (live stats + toggleable log panel). MPV output piped to log panel.
 - **ipc_unix.go / ipc_windows.go**: Platform-specific MPV IPC connection (Unix socket vs Windows named pipe). Windows uses `github.com/Microsoft/go-winio` (`DialPipe`) for overlapped I/O — do NOT replace with `os.OpenFile`, which opens the pipe without `FILE_FLAG_OVERLAPPED` and causes `Write()` to block while `Read()` is pending.
 
 ### Shared (`shared/update/`)
@@ -91,6 +91,5 @@ JSON messages over WebSocket:
 - `github.com/gorilla/websocket` — WebSocket protocol
 - `github.com/BurntSushi/toml` — config file parsing
 - `github.com/Microsoft/go-winio` — Windows named pipe I/O
-- `charm.land/bubbletea/v2` — Terminal UI framework
-- `charm.land/bubbles/v2` — TUI components (used by client selector)
-- `charm.land/lipgloss/v2` — Terminal styling
+- `github.com/rivo/tview` — Terminal UI framework
+- `github.com/gdamore/tcell/v2` — Terminal cell library (tview dependency)

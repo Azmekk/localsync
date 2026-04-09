@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/go-chi/chi/v5"
+	"github.com/rivo/tview"
 	"github.com/spf13/cobra"
 
 	"localsync/localsync/internal/handler"
@@ -22,8 +22,9 @@ import (
 	"localsync/shared/update"
 )
 
-// tuiProgram is set after the TUI starts, used by launchHostMPV to pipe output.
-var tuiProgram *tea.Program
+// tuiApp and tuiLogWriter are set after the TUI starts, used by launchHostMPV.
+var tuiApp *tview.Application
+var tuiLogWriter *tui.TUILogWriter
 
 // logFileWriter is set after log file is created, used by launchHostMPV.
 var logFileWriter io.Writer
@@ -139,15 +140,6 @@ func run(cmd *cobra.Command, args []string) error {
 	r.HandleFunc("/ws", handler.NewWSHandler(hub))
 	r.Get("/variant/{name}", handler.NewVariantHandler(absFile))
 
-	// Drain background update check
-	select {
-	case info := <-updateCh:
-		if info != nil {
-			update.PrintUpdateBanner(info)
-		}
-	case <-time.After(2 * time.Second):
-	}
-
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, quality)
 	wsURL := fmt.Sprintf("ws://0.0.0.0:%d/ws", cfg.Port)
@@ -160,7 +152,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}()
 
 	// Create TUI
-	hostModel := tui.NewHostModel(hub, tui.ServerInfo{
+	app, logW := tui.RunHostTUI(hub, tui.ServerInfo{
 		File:      filepath.Base(absFile),
 		Quality:   quality,
 		Version:   update.Version,
@@ -169,19 +161,18 @@ func run(cmd *cobra.Command, args []string) error {
 		WsURL:     wsURL,
 		Variants:  variants,
 	})
-
-	p := tea.NewProgram(hostModel)
-	tuiProgram = p
+	tuiApp = app
+	tuiLogWriter = logW
 
 	// Redirect log output to TUI + log file
-	tuiWriter := &tui.TUILogWriter{Program: p}
+	var writers []io.Writer
+	writers = append(writers, logW)
 	if logFile != nil {
-		log.SetOutput(io.MultiWriter(tuiWriter, logFile))
-	} else {
-		log.SetOutput(tuiWriter)
+		writers = append(writers, logFile)
 	}
+	log.SetOutput(io.MultiWriter(writers...))
 
-	// Log variant info through TUI
+	// Log variant info
 	if len(variants) > 0 {
 		log.Printf("found %d variant(s) in .localsync/", len(variants))
 		for _, v := range variants {
@@ -189,12 +180,22 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Launch host MPV (will use tuiProgram for output)
+	// Drain background update check (non-blocking, via TUI log)
+	go func() {
+		select {
+		case info := <-updateCh:
+			if info != nil {
+				log.Printf("Update available: %s -> %s (run with --update to upgrade)", update.Version, info.TagName)
+			}
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	// Launch host MPV
 	go launchHostMPV(cfg.Port, absFile)
 
 	// Run TUI (blocks until quit)
-	_, err = p.Run()
-	return err
+	return app.Run()
 }
 
 func toStreamConfig(cfg Config) handler.StreamConfig {
@@ -239,8 +240,8 @@ func launchHostMPV(port int, filePath string) {
 
 	// Pipe MPV output to TUI log panel + log file
 	var writers []io.Writer
-	if tuiProgram != nil {
-		writers = append(writers, &tui.TUILogWriter{Program: tuiProgram})
+	if tuiLogWriter != nil {
+		writers = append(writers, tuiLogWriter)
 	}
 	if logFileWriter != nil {
 		writers = append(writers, logFileWriter)

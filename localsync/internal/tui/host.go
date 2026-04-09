@@ -2,17 +2,14 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"localsync/localsync/internal/model"
 	"localsync/localsync/internal/service"
 )
-
-const maxLogs = 500
 
 // ServerInfo holds static server information for display.
 type ServerInfo struct {
@@ -25,224 +22,152 @@ type ServerInfo struct {
 	Variants  []model.Variant
 }
 
-// HostModel is the Bubble Tea model for the server TUI.
-type HostModel struct {
-	hub      *service.Hub
-	info     ServerInfo
-	logs     []string
-	showLogs bool
-	newLogs  int
-	width    int
-	height   int
-	logScroll int
-}
-
-type tickMsg time.Time
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-// NewHostModel creates a new host TUI model.
-func NewHostModel(hub *service.Hub, info ServerInfo) HostModel {
-	return HostModel{
-		hub:  hub,
-		info: info,
-	}
-}
-
-func (m HostModel) Init() tea.Cmd {
-	return tickCmd()
-}
-
-func (m HostModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		return m, nil
-
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "l", "L":
-			m.showLogs = !m.showLogs
-			if m.showLogs {
-				m.newLogs = 0
-				m.logScroll = max(0, len(m.logs)-m.logPanelHeight())
-			}
-			return m, nil
-		case "up", "k":
-			if m.showLogs && m.logScroll > 0 {
-				m.logScroll--
-			}
-			return m, nil
-		case "down", "j":
-			if m.showLogs {
-				maxScroll := max(0, len(m.logs)-m.logPanelHeight())
-				if m.logScroll < maxScroll {
-					m.logScroll++
-				}
-			}
-			return m, nil
-		}
-
-	case tickMsg:
-		return m, tickCmd()
-
-	case LogMsg:
-		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > maxLogs {
-			m.logs = m.logs[len(m.logs)-maxLogs:]
-		}
-		if !m.showLogs {
-			m.newLogs++
-		} else {
-			// Auto-scroll if at bottom
-			maxScroll := max(0, len(m.logs)-m.logPanelHeight())
-			if m.logScroll >= maxScroll-1 {
-				m.logScroll = maxScroll
-			}
-		}
-		return m, nil
-	}
-
-	return m, nil
-}
-
-func (m HostModel) View() tea.View {
-	if m.width == 0 {
-		return tea.NewView("Initializing...")
-	}
-
-	var b strings.Builder
+// RunHostTUI starts the tview application for the host.
+// Returns the app, log writer, and a function to start the app (blocking).
+func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogWriter) {
+	app := tview.NewApplication()
 
 	// Header
-	header := fmt.Sprintf(" LocalSync %s  |  %s  |  quality: %s  |  :%d",
-		m.info.Version, m.info.File, m.info.Quality, m.info.Port)
-	b.WriteString(headerStyle.Width(m.width - 2).Render(header))
-	b.WriteString("\n")
+	header := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText(fmt.Sprintf("[::b][#00d4aa]LocalSync %s[-]  |  %s  |  quality: %s  |  :%d\n[#555555]Stream: %s\nWS:     %s[-]",
+			info.Version, info.File, info.Quality, info.Port, info.StreamURL, info.WsURL)).
+		SetTextAlign(tview.AlignLeft)
+	header.SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
 
-	// URLs
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  Stream: %s", m.info.StreamURL)))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  WS:     %s", m.info.WsURL)))
-	b.WriteString("\n\n")
+	// Stats table
+	table := tview.NewTable().
+		SetBorders(false).
+		SetSelectable(false, false)
+	table.SetTitle(" Clients ").SetTitleColor(colorCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
 
-	// Client stats
-	stats := m.hub.GetClientStats()
-	cutoff := time.Now().Add(-5 * time.Second)
-
-	var activeStats []model.ClientInfo
-	for _, s := range stats {
-		if !s.LastUpdate.IsZero() && s.LastUpdate.After(cutoff) {
-			activeStats = append(activeStats, s)
-		}
+	// Set table headers
+	headers := []string{"Name", "IP", "Speed", "Buffer", "Size", "Position"}
+	for i, h := range headers {
+		table.SetCell(0, i, tview.NewTableCell(h).
+			SetTextColor(tcell.ColorDimGray).
+			SetAttributes(tcell.AttrBold).
+			SetSelectable(false))
 	}
 
-	if len(activeStats) == 0 {
-		b.WriteString(dimStyle.Render("  Waiting for client to connect..."))
-		b.WriteString("\n")
-	} else {
-		// Table header
-		b.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %-12s %-22s %10s %10s %10s %10s",
-			"Name", "IP", "Speed", "Buffer", "Size", "Position")))
-		b.WriteString("\n")
+	// Log view
+	logView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetMaxLines(500)
+	logView.SetTitle(" Logs [L] toggle ").SetTitleColor(colorCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
 
-		for _, s := range activeStats {
-			name := s.Name
-			if name == "" {
-				name = "unknown"
-			}
-
-			speed := speedStyle(s.SpeedKbps).Render(fmt.Sprintf("%6.0f kbps", s.SpeedKbps))
-			buffer := formatBuffer(s.BufferSecs)
-			size := formatBytes(s.BufferBytes)
-			pos := formatTime(s.Pos)
-
-			b.WriteString(fmt.Sprintf("  %-12s %-22s %s %10s %10s %10s",
-				name, s.IP, speed, buffer, size, pos))
-			b.WriteString("\n")
-		}
-	}
-
-	// Calculate remaining space
-	usedLines := strings.Count(b.String(), "\n") + 2 // +2 for status bar + padding
-
-	// Log panel
-	if m.showLogs {
-		logHeight := m.logPanelHeight()
-		if logHeight > 0 {
-			b.WriteString("\n")
-			logTitle := dimStyle.Render("  Logs ")
-			b.WriteString(logTitle)
-			b.WriteString("\n")
-
-			start := m.logScroll
-			end := start + logHeight
-			if end > len(m.logs) {
-				end = len(m.logs)
-			}
-			if start > len(m.logs) {
-				start = len(m.logs)
-			}
-
-			for i := start; i < end; i++ {
-				line := m.logs[i]
-				if len(line) > m.width-4 {
-					line = line[:m.width-4]
-				}
-				b.WriteString(dimStyle.Render("  " + line))
-				b.WriteString("\n")
-			}
-
-			// Pad remaining lines
-			rendered := end - start
-			for i := rendered; i < logHeight; i++ {
-				b.WriteString("\n")
-			}
-		}
-	} else {
-		// Fill remaining space
-		remaining := m.height - usedLines
-		for i := 0; i < remaining; i++ {
-			b.WriteString("\n")
-		}
-	}
+	logWriter := &TUILogWriter{View: logView, App: app}
 
 	// Status bar
-	logsKey := keyStyle.Render("[L]") + " Logs"
-	if m.newLogs > 0 {
-		logsKey += " " + badgeStyle.Render(fmt.Sprintf("(%d new)", m.newLogs))
-	}
-	if m.showLogs {
-		logsKey = keyStyle.Render("[L]") + " Hide Logs  " +
-			dimStyle.Render("[j/k]") + " Scroll"
-	}
-	quitKey := keyStyle.Render("[Q]") + " Quit"
-	statusBar := fmt.Sprintf(" %s  |  %s", logsKey, quitKey)
-	b.WriteString(statusBarStyle.Width(m.width).Render(statusBar))
+	statusBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText(" [#00d4aa::b][L][-::-] Logs  |  [#00d4aa::b][Q][-::-] Quit")
 
-	v := tea.NewView(b.String())
-	v.AltScreen = true
-	return v
-}
+	// Layout
+	showLogs := false
+	newLogs := 0
 
-func (m HostModel) logPanelHeight() int {
-	// Reserve lines for: header(1) + urls(2) + blank(1) + stats header(1) + at least 1 stat row + blank(1) + log title(1) + status bar(1)
-	reserved := 10
-	available := m.height - reserved
-	if available < 3 {
-		return 3
+	mainLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(header, 5, 0, false).
+		AddItem(table, 0, 1, false).
+		AddItem(statusBar, 1, 0, false)
+
+	logsLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(header, 5, 0, false).
+		AddItem(table, 0, 1, false).
+		AddItem(logView, 0, 1, false).
+		AddItem(statusBar, 1, 0, false)
+
+	pages := tview.NewPages().
+		AddPage("main", mainLayout, true, true).
+		AddPage("logs", logsLayout, true, false)
+
+	updateStatusBar := func() {
+		if showLogs {
+			statusBar.SetText(" [#00d4aa::b][L][-::-] Hide Logs  |  [#00d4aa::b][Q][-::-] Quit")
+		} else {
+			badge := ""
+			if newLogs > 0 {
+				badge = fmt.Sprintf("  [red::b](%d new)[-::-]", newLogs)
+			}
+			statusBar.SetText(fmt.Sprintf(" [#00d4aa::b][L][-::-] Logs%s  |  [#00d4aa::b][Q][-::-] Quit", badge))
+		}
 	}
-	half := m.height / 2
-	if available > half {
-		return half
-	}
-	return available
+
+	// Key handler
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 'q', 'Q':
+			app.Stop()
+			return nil
+		case 'l', 'L':
+			showLogs = !showLogs
+			if showLogs {
+				newLogs = 0
+				pages.SwitchToPage("logs")
+			} else {
+				pages.SwitchToPage("main")
+			}
+			updateStatusBar()
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlC {
+			app.Stop()
+			return nil
+		}
+		return event
+	})
+
+	// Periodic stats refresh
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			app.QueueUpdateDraw(func() {
+				stats := hub.GetClientStats()
+				cutoff := time.Now().Add(-5 * time.Second)
+
+				// Clear old rows (keep header)
+				rowCount := table.GetRowCount()
+				for r := rowCount - 1; r >= 1; r-- {
+					table.RemoveRow(r)
+				}
+
+				hasActive := false
+				row := 1
+				for _, s := range stats {
+					if s.LastUpdate.IsZero() || s.LastUpdate.Before(cutoff) {
+						continue
+					}
+					hasActive = true
+					name := s.Name
+					if name == "" {
+						name = "unknown"
+					}
+
+					table.SetCell(row, 0, tview.NewTableCell(name).SetTextColor(colorWhite))
+					table.SetCell(row, 1, tview.NewTableCell(s.IP).SetTextColor(colorWhite))
+					table.SetCell(row, 2, tview.NewTableCell(fmt.Sprintf("%.0f kbps", s.SpeedKbps)).SetTextColor(speedColor(s.SpeedKbps)))
+					table.SetCell(row, 3, tview.NewTableCell(fmt.Sprintf("%.1fs", s.BufferSecs)).SetTextColor(bufferColor(s.BufferSecs)))
+					table.SetCell(row, 4, tview.NewTableCell(formatBytes(s.BufferBytes)).SetTextColor(colorWhite))
+					table.SetCell(row, 5, tview.NewTableCell(formatTime(s.Pos)).SetTextColor(colorWhite))
+					row++
+				}
+
+				if !hasActive {
+					table.SetCell(1, 0, tview.NewTableCell("Waiting for client to connect...").
+						SetTextColor(tcell.ColorDimGray).SetSelectable(false))
+					for i := 1; i < 6; i++ {
+						table.SetCell(1, i, tview.NewTableCell(""))
+					}
+				}
+			})
+		}
+	}()
+
+	app.SetRoot(pages, true).EnableMouse(false)
+	return app, logWriter
 }
 
 func formatTime(secs float64) string {
@@ -257,16 +182,6 @@ func formatTime(secs float64) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%02d:%02d", m, s)
-}
-
-func formatBuffer(secs float64) string {
-	if secs <= 0 {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ff4444")).Render("0.0s")
-	}
-	if secs < 3 {
-		return warnStyle.Render(fmt.Sprintf("%.1fs", secs))
-	}
-	return goodStyle.Render(fmt.Sprintf("%.1fs", secs))
 }
 
 func formatBytes(bytes int64) string {

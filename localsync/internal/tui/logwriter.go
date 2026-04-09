@@ -3,23 +3,25 @@ package tui
 import (
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
+	"github.com/rivo/tview"
 )
 
-// LogMsg is sent to the TUI when a log line is captured.
-type LogMsg string
-
-// TUILogWriter implements io.Writer and sends each line to a Bubble Tea program.
+// TUILogWriter implements io.Writer and appends lines to a tview.TextView.
+// It uses a non-blocking approach to avoid deadlocking the tview event loop.
 type TUILogWriter struct {
-	Program *tea.Program
+	View *tview.TextView
+	App  *tview.Application
 }
 
 func (w *TUILogWriter) Write(p []byte) (int, error) {
-	lines := strings.Split(strings.TrimRight(string(p), "\n"), "\n")
-	for _, line := range lines {
-		if line != "" {
-			w.Program.Send(LogMsg(line))
-		}
+	text := strings.TrimRight(string(p), "\n")
+	if text == "" {
+		return len(p), nil
 	}
+	// Write directly to the TextView (thread-safe) and trigger a draw
+	fmt_text := text + "\n"
+	go w.App.QueueUpdateDraw(func() {
+		w.View.Write([]byte(fmt_text))
+	})
 	return len(p), nil
 }
