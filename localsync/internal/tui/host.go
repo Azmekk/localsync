@@ -23,7 +23,6 @@ type ServerInfo struct {
 }
 
 // RunHostTUI starts the tview application for the host.
-// Returns the app, log writer, and a function to start the app (blocking).
 func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogWriter) {
 	app := tview.NewApplication()
 
@@ -54,6 +53,7 @@ func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogW
 	logView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetScrollable(true).
+		ScrollToEnd().
 		SetMaxLines(500)
 	logView.SetTitle(" Logs [L] toggle ").SetTitleColor(colorCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
 
@@ -66,7 +66,6 @@ func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogW
 
 	// Layout
 	showLogs := false
-	newLogs := 0
 
 	mainLayout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(header, 5, 0, false).
@@ -87,11 +86,7 @@ func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogW
 		if showLogs {
 			statusBar.SetText(" [#00d4aa::b][L][-::-] Hide Logs  |  [#00d4aa::b][Q][-::-] Quit")
 		} else {
-			badge := ""
-			if newLogs > 0 {
-				badge = fmt.Sprintf("  [red::b](%d new)[-::-]", newLogs)
-			}
-			statusBar.SetText(fmt.Sprintf(" [#00d4aa::b][L][-::-] Logs%s  |  [#00d4aa::b][Q][-::-] Quit", badge))
+			statusBar.SetText(" [#00d4aa::b][L][-::-] Logs  |  [#00d4aa::b][Q][-::-] Quit")
 		}
 	}
 
@@ -104,8 +99,8 @@ func RunHostTUI(hub *service.Hub, info ServerInfo) (*tview.Application, *TUILogW
 		case 'l', 'L':
 			showLogs = !showLogs
 			if showLogs {
-				newLogs = 0
 				pages.SwitchToPage("logs")
+				app.SetFocus(logView)
 			} else {
 				pages.SwitchToPage("main")
 			}

@@ -98,7 +98,6 @@ type PlaybackTUI struct {
 	statusView *tview.TextView
 	pages     *tview.Pages
 	showLogs  bool
-	newLogs   int
 	statusBar *tview.TextView
 }
 
@@ -125,6 +124,7 @@ func NewPlaybackTUI(file, host, variantName string) *PlaybackTUI {
 	logView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetScrollable(true).
+		ScrollToEnd().
 		SetMaxLines(500)
 	logView.SetTitle(" Logs ").SetTitleColor(tcell.ColorDarkCyan).SetBorder(true).SetBorderColor(tcell.ColorDimGray).SetBorderPadding(0, 0, 1, 1)
 
@@ -161,16 +161,6 @@ func NewPlaybackTUI(file, host, variantName string) *PlaybackTUI {
 		statusBar:  statusBar,
 	}
 
-	// Track new logs
-	logView.SetChangedFunc(func() {
-		if !pt.showLogs {
-			pt.newLogs++
-			app.QueueUpdateDraw(func() {
-				pt.updateStatusBar()
-			})
-		}
-	})
-
 	// Key handler
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
@@ -180,8 +170,8 @@ func NewPlaybackTUI(file, host, variantName string) *PlaybackTUI {
 		case 'l', 'L':
 			pt.showLogs = !pt.showLogs
 			if pt.showLogs {
-				pt.newLogs = 0
 				pages.SwitchToPage("logs")
+				app.SetFocus(logView)
 			} else {
 				pages.SwitchToPage("main")
 			}
@@ -203,11 +193,7 @@ func (pt *PlaybackTUI) updateStatusBar() {
 	if pt.showLogs {
 		pt.statusBar.SetText(" [#00d4aa::b][L][-::-] Hide Logs  |  [#00d4aa::b][Q][-::-] Quit")
 	} else {
-		badge := ""
-		if pt.newLogs > 0 {
-			badge = fmt.Sprintf("  [red::b](%d new)[-::-]", pt.newLogs)
-		}
-		pt.statusBar.SetText(fmt.Sprintf(" [#00d4aa::b][L][-::-] Logs%s  |  [#00d4aa::b][Q][-::-] Quit", badge))
+		pt.statusBar.SetText(" [#00d4aa::b][L][-::-] Logs  |  [#00d4aa::b][Q][-::-] Quit")
 	}
 }
 

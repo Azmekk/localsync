@@ -259,7 +259,6 @@ func launchHostMPV(port int, filePath string) {
 		log.Printf("warning: could not launch host MPV: %v", err)
 		return
 	}
-
 	wsURL := fmt.Sprintf("ws://localhost:%d/ws", port)
 	syncClient := exec.Command("syncclient",
 		"--server", wsURL,
@@ -274,6 +273,10 @@ func launchHostMPV(port int, filePath string) {
 	}
 
 	mpvCmd.Wait()
+	// MPV exited — stop TUI
+	if tuiApp != nil {
+		tuiApp.Stop()
+	}
 }
 
 func getHostIPCPath() string {

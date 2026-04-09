@@ -670,9 +670,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Run playback TUI if active (blocking call)
 	if pbTUI != nil {
-		err := pbTUI.App.Run()
-		close(statsDone)
-		return err
+		return pbTUI.App.Run()
 	}
 
 	close(statsDone)

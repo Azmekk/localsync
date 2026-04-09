@@ -22,6 +22,7 @@ func (w *TUILogWriter) Write(p []byte) (int, error) {
 	fmt_text := text + "\n"
 	go w.App.QueueUpdateDraw(func() {
 		w.View.Write([]byte(fmt_text))
+		w.View.ScrollToEnd()
 	})
 	return len(p), nil
 }
