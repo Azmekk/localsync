@@ -41,7 +41,6 @@ func init() {
 	rootCmd.Flags().Bool("create-media-folder", false, "create .localsync/ variant folder next to video and exit")
 	rootCmd.Flags().BoolP("version", "v", false, "print version and exit")
 	rootCmd.Flags().BoolP("update", "u", false, "update to the latest release")
-	rootCmd.MarkFlagRequired("file")
 }
 
 func main() {
@@ -75,6 +74,9 @@ func run(cmd *cobra.Command, args []string) error {
 	updateCh := update.StartBackgroundCheck()
 
 	filePath, _ := cmd.Flags().GetString("file")
+	if filePath == "" {
+		return fmt.Errorf("--file flag is required")
+	}
 	absFile, err := filepath.Abs(filePath)
 	if err != nil {
 		return fmt.Errorf("cannot resolve file path: %w", err)
