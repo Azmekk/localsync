@@ -1,4 +1,4 @@
-package main
+package handler
 
 import (
 	"fmt"
@@ -9,7 +9,46 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	"localsync/localsync/internal/service"
 )
+
+// TranscodeOpts holds the FFmpeg transcode settings needed by the stream handler.
+type TranscodeOpts struct {
+	VideoCodec   string
+	ExtraArgs    []string
+	AudioCodec   string
+	AudioBitrate string
+	Subtitles    bool
+	Realtime     bool
+	Format       string
+}
+
+// QualityPreset defines a named quality level.
+type QualityPreset struct {
+	Name        string
+	Bitrate     string
+	Resolution  string
+	Passthrough bool
+	ExtraArgs   []string
+}
+
+// StreamConfig holds what the stream handler needs from the app config.
+type StreamConfig struct {
+	Qualities []QualityPreset
+	Transcode TranscodeOpts
+}
+
+func (sc *StreamConfig) FindQuality(name string) *QualityPreset {
+	for i := range sc.Qualities {
+		if sc.Qualities[i].Name == name {
+			return &sc.Qualities[i]
+		}
+	}
+	return nil
+}
 
 var mimeTypes = map[string]string{
 	".mkv":  "video/x-matroska",
@@ -21,24 +60,17 @@ var mimeTypes = map[string]string{
 	".flv":  "video/x-flv",
 }
 
-func StreamHandler(cfg Config, filePath string, hlsMgr *HLSManager) http.HandlerFunc {
+var formatContentTypes = map[string]string{
+	"matroska": "video/x-matroska",
+	"mpegts":   "video/mp2t",
+	"mp4":      "video/mp4",
+	"webm":     "video/webm",
+}
+
+// NewStreamHandler returns an HTTP handler that serves video via passthrough or transcode.
+func NewStreamHandler(cfg StreamConfig, filePath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		quality := r.URL.Query().Get("quality")
-
-		// If HLS cache is complete, redirect to master or variant playlist
-		if hlsMgr != nil && hlsMgr.HasCompleteCache() {
-			if quality == "" || quality == "adaptive" {
-				http.Redirect(w, r, "/hls/master.m3u8", http.StatusFound)
-				return
-			}
-			// Specific variant requested — find its stream index
-			idx := hlsMgr.qualityVariantIndex(quality)
-			if idx >= 0 {
-				http.Redirect(w, r, fmt.Sprintf("/hls/stream_%d.m3u8", idx), http.StatusFound)
-				return
-			}
-		}
-
 		if quality == "" {
 			quality = "source"
 		}
@@ -55,6 +87,45 @@ func StreamHandler(cfg Config, filePath string, hlsMgr *HLSManager) http.Handler
 		}
 
 		serveTranscode(w, r, filePath, *preset, cfg.Transcode)
+	}
+}
+
+// NewVariantHandler returns an HTTP handler that serves pre-compressed variant files
+// from the .localsync/ folder next to the video file.
+func NewVariantHandler(videoPath string) http.HandlerFunc {
+	variantDir := service.VariantDir(videoPath)
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.Error(w, "variant name required", http.StatusBadRequest)
+			return
+		}
+
+		// Security: prevent directory traversal
+		if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+			http.Error(w, "invalid variant name", http.StatusBadRequest)
+			return
+		}
+
+		filePath := filepath.Join(variantDir, name)
+
+		// Verify the resolved path is within the variant directory
+		absPath, err := filepath.Abs(filePath)
+		if err != nil {
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+		absDir, err := filepath.Abs(variantDir)
+		if err != nil {
+			http.Error(w, "invalid path", http.StatusInternalServerError)
+			return
+		}
+		if !strings.HasPrefix(absPath, absDir+string(os.PathSeparator)) {
+			http.Error(w, "invalid variant name", http.StatusBadRequest)
+			return
+		}
+
+		servePassthrough(w, r, filePath)
 	}
 }
 
@@ -83,14 +154,7 @@ func servePassthrough(w http.ResponseWriter, r *http.Request, filePath string) {
 	http.ServeContent(w, r, filepath.Base(filePath), stat.ModTime(), f)
 }
 
-var formatContentTypes = map[string]string{
-	"matroska": "video/x-matroska",
-	"mpegts":   "video/mp2t",
-	"mp4":      "video/mp4",
-	"webm":     "video/webm",
-}
-
-func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, preset QualityPreset, tc TranscodeConfig) {
+func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, preset QualityPreset, tc TranscodeOpts) {
 	var args []string
 
 	if tc.Realtime {
@@ -108,7 +172,6 @@ func serveTranscode(w http.ResponseWriter, r *http.Request, filePath string, pre
 	}
 
 	if preset.Resolution != "" {
-		// Parse "WxH" and use -2 for width to preserve aspect ratio
 		parts := strings.SplitN(preset.Resolution, "x", 2)
 		if len(parts) == 2 {
 			args = append(args, "-vf", fmt.Sprintf("scale=-2:%s", parts[1]))

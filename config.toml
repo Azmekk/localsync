@@ -27,10 +27,3 @@ resolution = "1280x720"
 name = "480p"
 bitrate = "1000k"
 resolution = "854x480"
-
-[hls]
-enabled = false
-segment_duration = 4
-auto_generate = false
-qualities = ["1080p", "720p", "480p"]
-segment_type = "mpegts"

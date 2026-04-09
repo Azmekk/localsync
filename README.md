@@ -77,37 +77,47 @@ curl -fsSL https://raw.githubusercontent.com/Azmekk/localsync/master/install.sh 
 **Host:**
 
 ```bash
-./localsync -file /path/to/movie.mkv
+localsync --file /path/to/movie.mkv
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-file` | *(required)* | Path to the video file to play |
-| `-quality` | `source` | Quality preset to use (`source`, `1080p`, `720p`, `480p`, or any custom preset from config) |
-| `-config` | OS config dir | Path to `config.toml` |
-| `-precreate-hls` | `false` | Generate HLS segments for the given quality and exit |
-| `-version` | | Print version and exit |
-| `-update` | | Update localsync and syncclient to the latest release |
+| `--file`, `-f` | *(required)* | Path to the video file to play |
+| `--quality` | `source` | Quality preset to use (`source`, `1080p`, `720p`, `480p`, or any custom preset from config) |
+| `--config`, `-c` | OS config dir | Path to `config.toml` |
+| `--create-media-folder` | `false` | Create `.localsync/` variant folder next to the video and exit |
+| `--version` | | Print version and exit |
+| `--update` | | Update localsync and syncclient to the latest release |
 
 **Client:**
 
 ```bash
-./syncclient --server ws://<host-ip>:<port>/ws
+syncclient --server ws://<host-ip>:<port>/ws
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--server` | *(required)* | WebSocket URL of the host (`ws://<host-ip>:<port>/ws`) |
-| `--quality` | *(adaptive)* | Quality to use in HLS mode (`adaptive`, or a preset name like `720p`) |
+| `--variant` | | Variant name to play (skips interactive menu) |
 | `--ipc` | `/tmp/mpvsync` (Unix) or `\\.\pipe\mpvsync` (Windows) | Path for the MPV IPC socket |
 | `--name` | `client` | Identifier sent with sync events (`host` or `client`) |
 | `--no-launch` | `false` | Skip launching MPV (used internally by the host) |
 | `--version` | | Print version and exit |
 | `--update` | | Update localsync and syncclient to the latest release |
 
+When variants are available, the client shows an interactive menu on connect:
+
+```
+Available versions:
+  1. source (movie.mkv)
+  2. 720p_low (890 MB)
+  3. 720p_high (2.1 GB)
+Select [1]:
+```
+
 ## Configuration
 
-A `config.toml` file is created automatically in your OS config directory on first run. You can also specify a custom path with `-config`.
+A `config.toml` file is created automatically in your OS config directory on first run. You can also specify a custom path with `--config`.
 
 | OS | Default path |
 |----|------|
@@ -149,13 +159,6 @@ resolution = "1280x720"
 name = "480p"
 bitrate = "1000k"
 resolution = "854x480"
-
-[hls]
-enabled = false
-segment_duration = 4
-auto_generate = false
-qualities = ["1080p", "720p", "480p"]
-segment_type = "mpegts"
 ```
 
 | Key | Default | Description |
@@ -174,37 +177,54 @@ segment_type = "mpegts"
 | `transcode.subtitles` | `true` | Pass through subtitle streams in transcoded output |
 | `transcode.realtime` | `true` | Enable `-re` (realtime throttling) — disable for hardware encoders that can buffer ahead |
 | `transcode.format` | `matroska` | Container format (`matroska`, `mpegts`, `mp4`, etc.) |
-| `hls.enabled` | `false` | Enable adaptive HLS mode |
-| `hls.segment_duration` | `4` | Duration of each HLS segment in seconds |
-| `hls.auto_generate` | `false` | Automatically generate HLS on server startup |
-| `hls.qualities` | `[]` | Quality presets to encode (empty = all non-passthrough) |
-| `hls.segment_type` | `mpegts` | Segment format: `mpegts` (`.ts`) or `fmp4` (`.m4s`, required for AV1) |
 
-### Adaptive HLS
+### Pre-Compressed Variants
 
-LocalSync can pre-create a multi-variant HLS stream with a single FFmpeg command that encodes all quality variants simultaneously. This produces a `master.m3u8` playlist that MPV uses for adaptive bitrate switching.
+Instead of live transcoding, you can pre-encode video at different quality levels and let clients choose which version to stream. This gives better quality (multi-pass encoding, no realtime pressure) and zero CPU usage during playback.
 
-**One-shot generation** (generates all configured variants):
+**Create the variant folder:**
 
 ```bash
-./localsync -file /path/to/movie.mkv -precreate-hls
+localsync --file /path/to/movie.mkv --create-media-folder
 ```
 
-**Auto-generation on startup** — set `hls.enabled = true` and `hls.auto_generate = true` in config. The server starts immediately while HLS generates in the background; clients fall back to live transcoding until generation completes.
+This creates a `.localsync/` directory next to your video file. Place pre-compressed versions in it with any naming convention:
 
-**Client quality selection** — when the server is in HLS mode, clients use adaptive streaming by default. Pin a specific quality with `--quality`:
+```
+/path/to/
+  movie.mkv
+  .localsync/
+    720p_low.mkv
+    720p_high.mkv
+    480p.mp4
+```
+
+When a client connects, they'll see an interactive menu listing all available variants along with the source file. Clients can also skip the menu with `--variant`:
 
 ```bash
-./syncclient --server ws://host:13771/ws --quality 720p
+syncclient --server ws://host:13771/ws --variant 720p_low
 ```
 
-HLS segments are stored in `.localsync-hls/` next to the video file. HLS streams are natively seekable in MPV. For AV1 codecs, set `segment_type = "fmp4"` to use fMP4 segments (`.m4s`) instead of MPEG-TS.
+Variant files are served via passthrough (no transcoding) with full seek support.
 
 ### Bandwidth-Aware Pause
 
 When a client's buffer runs dry due to insufficient bandwidth, the host is automatically paused and notified with the client's download speed. The log message includes a recommended bitrate so you can adjust the quality preset. Once the client's buffer recovers, playback resumes automatically.
 
 Clients buffer up to 100MB of content ahead to absorb short bandwidth dips.
+
+### Client Stats
+
+While a client is connected, the host logs periodic stats every 3 seconds:
+
+```
+--- Client Stats ---
+  client (192.168.1.5):
+    Speed: 2500 kbps | Buffer: 3.2s | Pos: 02:22.3
+--------------------
+```
+
+This includes the client's download speed, buffer duration, and current playback position.
 
 ### Hardware encoding examples
 
@@ -290,9 +310,9 @@ format = "matroska"
 
 ## Build (from source)
 
-Requires Go 1.21+.
+Requires Go 1.22+.
 
 ```bash
-go build -o localsync ./localsync
-go build -o syncclient ./syncclient
+go build -o bin/localsync ./localsync
+go build -o bin/syncclient ./syncclient
 ```

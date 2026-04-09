@@ -1,30 +1,28 @@
-package main
+package service
 
 import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
+
+	"localsync/localsync/internal/model"
 )
 
-type SessionState struct {
-	File      string   `json:"file"`
-	Quality   string   `json:"quality"`
-	Pos       float64  `json:"pos"`
-	Paused    bool     `json:"paused"`
-	HLSMode   bool     `json:"hls_mode,omitempty"`
-	Qualities []string `json:"qualities,omitempty"`
-}
-
+// Hub manages WebSocket clients, broadcasts sync messages, and tracks client stats.
 type Hub struct {
 	clients    map[*websocket.Conn]bool
 	broadcast  chan broadcastMsg
-	register   chan *websocket.Conn
+	register   chan registerMsg
 	unregister chan *websocket.Conn
-	state      SessionState
+	state      model.SessionState
 	maxClients int
 	mu         sync.Mutex
+
+	clientInfo   map[*websocket.Conn]*model.ClientInfo
+	clientInfoMu sync.RWMutex
 }
 
 type broadcastMsg struct {
@@ -32,14 +30,20 @@ type broadcastMsg struct {
 	data   []byte
 }
 
-func NewHub(initialState SessionState, maxClients int) *Hub {
+type registerMsg struct {
+	conn *websocket.Conn
+	ip   string
+}
+
+func NewHub(initialState model.SessionState, maxClients int) *Hub {
 	return &Hub{
 		clients:    make(map[*websocket.Conn]bool),
 		broadcast:  make(chan broadcastMsg, 256),
-		register:   make(chan *websocket.Conn),
+		register:   make(chan registerMsg),
 		unregister: make(chan *websocket.Conn),
 		state:      initialState,
 		maxClients: maxClients,
+		clientInfo: make(map[*websocket.Conn]*model.ClientInfo),
 	}
 }
 
@@ -58,20 +62,23 @@ func (h *Hub) CanRegister() bool {
 func (h *Hub) Run() {
 	for {
 		select {
-		case conn := <-h.register:
-			h.clients[conn] = true
+		case msg := <-h.register:
+			h.clients[msg.conn] = true
+			h.clientInfoMu.Lock()
+			h.clientInfo[msg.conn] = &model.ClientInfo{IP: msg.ip}
+			h.clientInfoMu.Unlock()
+
 			h.mu.Lock()
 			initMsg, _ := json.Marshal(map[string]interface{}{
-				"event":     "init",
-				"file":      h.state.File,
-				"quality":   h.state.Quality,
-				"pos":       h.state.Pos,
-				"paused":    h.state.Paused,
-				"hls_mode":  h.state.HLSMode,
-				"qualities": h.state.Qualities,
+				"event":    "init",
+				"file":     h.state.File,
+				"quality":  h.state.Quality,
+				"pos":      h.state.Pos,
+				"paused":   h.state.Paused,
+				"variants": h.state.Variants,
 			})
 			h.mu.Unlock()
-			if err := conn.WriteMessage(websocket.TextMessage, initMsg); err != nil {
+			if err := msg.conn.WriteMessage(websocket.TextMessage, initMsg); err != nil {
 				log.Printf("error sending init: %v", err)
 			}
 
@@ -79,6 +86,9 @@ func (h *Hub) Run() {
 			if _, ok := h.clients[conn]; ok {
 				delete(h.clients, conn)
 				conn.Close()
+				h.clientInfoMu.Lock()
+				delete(h.clientInfo, conn)
+				h.clientInfoMu.Unlock()
 			}
 
 		case msg := <-h.broadcast:
@@ -90,14 +100,17 @@ func (h *Hub) Run() {
 					log.Printf("error broadcasting: %v", err)
 					delete(h.clients, conn)
 					conn.Close()
+					h.clientInfoMu.Lock()
+					delete(h.clientInfo, conn)
+					h.clientInfoMu.Unlock()
 				}
 			}
 		}
 	}
 }
 
-func (h *Hub) Register(c *websocket.Conn) {
-	h.register <- c
+func (h *Hub) Register(conn *websocket.Conn, ip string) {
+	h.register <- registerMsg{conn: conn, ip: ip}
 }
 
 func (h *Hub) Unregister(c *websocket.Conn) {
@@ -108,13 +121,7 @@ func (h *Hub) Broadcast(sender *websocket.Conn, msg []byte) {
 	h.broadcast <- broadcastMsg{sender: sender, data: msg}
 }
 
-func (h *Hub) SetHLSReady(ready bool, qualities []string) {
-	h.mu.Lock()
-	h.state.HLSMode = ready
-	h.state.Qualities = qualities
-	h.mu.Unlock()
-}
-
+// UpdateState updates the session state from an incoming sync message.
 func (h *Hub) UpdateState(msg []byte) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(msg, &raw); err != nil {
@@ -142,4 +149,37 @@ func (h *Hub) UpdateState(msg []byte) {
 			h.state.Pos = pos
 		}
 	}
+}
+
+// UpdateClientStats parses a stats message and updates the client info map.
+func (h *Hub) UpdateClientStats(conn *websocket.Conn, raw []byte) {
+	var stats model.StatsMessage
+	if err := json.Unmarshal(raw, &stats); err != nil {
+		return
+	}
+
+	h.clientInfoMu.Lock()
+	defer h.clientInfoMu.Unlock()
+
+	info, ok := h.clientInfo[conn]
+	if !ok {
+		return
+	}
+	info.Name = stats.Source
+	info.SpeedKbps = stats.SpeedKbps
+	info.BufferSecs = stats.BufferSecs
+	info.Pos = stats.Pos
+	info.LastUpdate = time.Now()
+}
+
+// GetClientStats returns a snapshot of all connected client stats.
+func (h *Hub) GetClientStats() []model.ClientInfo {
+	h.clientInfoMu.RLock()
+	defer h.clientInfoMu.RUnlock()
+
+	stats := make([]model.ClientInfo, 0, len(h.clientInfo))
+	for _, info := range h.clientInfo {
+		stats = append(stats, *info)
+	}
+	return stats
 }

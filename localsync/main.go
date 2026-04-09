@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,97 +9,68 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/go-chi/chi/v5"
+	"github.com/spf13/cobra"
 
+	"localsync/localsync/internal/handler"
+	"localsync/localsync/internal/model"
+	"localsync/localsync/internal/service"
 	"localsync/shared/update"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+var rootCmd = &cobra.Command{
+	Use:   "localsync",
+	Short: "Sync video playback between MPV instances over a local network",
+	RunE:  run,
 }
 
-func SyncHandler(hub *Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !hub.CanRegister() {
-			http.Error(w, "max clients reached", http.StatusServiceUnavailable)
-			return
-		}
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("websocket upgrade failed: %v", err)
-			return
-		}
-		hub.Register(conn)
-		defer hub.Unregister(conn)
-
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			var raw map[string]interface{}
-			if err := json.Unmarshal(msg, &raw); err == nil {
-				source, _ := raw["source"].(string)
-				event, _ := raw["event"].(string)
-				if source != "host" && event != "ready" && event != "buffering" {
-					continue
-				}
-			}
-			hub.UpdateState(msg)
-			hub.Broadcast(conn, msg)
-		}
-	}
-}
-
-func defaultConfigPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "config.toml"
-	}
-	return filepath.Join(dir, "localsync", "config.toml")
+func init() {
+	rootCmd.Flags().StringP("config", "c", defaultConfigPath(), "path to config.toml")
+	rootCmd.Flags().StringP("file", "f", "", "path to video file")
+	rootCmd.Flags().String("quality", "source", "quality preset: source|1080p|720p|480p")
+	rootCmd.Flags().Bool("create-media-folder", false, "create .localsync/ variant folder next to video and exit")
+	rootCmd.Flags().Bool("version", false, "print version and exit")
+	rootCmd.Flags().Bool("update", false, "update to the latest release")
+	rootCmd.MarkFlagRequired("file")
 }
 
 func main() {
-	configPath := flag.String("config", defaultConfigPath(), "path to config.toml")
-	filePath := flag.String("file", "", "absolute path to video file (required)")
-	quality := flag.String("quality", "source", "quality preset: source|1080p|720p|480p")
-	precreateHLS := flag.Bool("precreate-hls", false, "generate HLS segments for the given quality and exit")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	doUpdate := flag.Bool("update", false, "update localsync and syncclient to the latest release")
-	flag.Parse()
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
 
-	if *showVersion {
+func run(cmd *cobra.Command, args []string) error {
+	showVersion, _ := cmd.Flags().GetBool("version")
+	if showVersion {
 		fmt.Printf("localsync %s\n", update.Version)
-		return
+		return nil
 	}
 
-	if *doUpdate {
-		if err := update.SelfUpdate("localsync"); err != nil {
-			fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
-			os.Exit(1)
-		}
-		return
+	doUpdate, _ := cmd.Flags().GetBool("update")
+	if doUpdate {
+		return update.SelfUpdate("localsync")
 	}
 
 	updateCh := update.StartBackgroundCheck()
 
-	if *filePath == "" {
-		fmt.Fprintln(os.Stderr, "error: -file flag is required")
-		os.Exit(1)
-	}
-
-	absFile, err := filepath.Abs(*filePath)
+	filePath, _ := cmd.Flags().GetString("file")
+	absFile, err := filepath.Abs(filePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot resolve file path: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("cannot resolve file path: %w", err)
 	}
-
 	if _, err := os.Stat(absFile); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "error: file not found: %s\n", absFile)
-		os.Exit(1)
+		return fmt.Errorf("file not found: %s", absFile)
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	// Handle --create-media-folder
+	createFolder, _ := cmd.Flags().GetBool("create-media-folder")
+	if createFolder {
+		return service.CreateMediaFolder(absFile)
+	}
+
+	configPath, _ := cmd.Flags().GetString("config")
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		log.Printf("warning: could not load config (%v), using defaults", err)
 		cfg = Config{
@@ -116,74 +85,49 @@ func main() {
 		}
 	}
 
-	preset := cfg.FindQuality(*quality)
+	quality, _ := cmd.Flags().GetString("quality")
+	preset := cfg.FindQuality(quality)
 	if preset == nil {
-		fmt.Fprintf(os.Stderr, "error: unknown quality preset: %s\n", *quality)
-		os.Exit(1)
+		return fmt.Errorf("unknown quality preset: %s", quality)
 	}
 
 	if !preset.Passthrough {
 		if _, err := exec.LookPath("ffmpeg"); err != nil {
-			fmt.Fprintln(os.Stderr, "error: ffmpeg not found on PATH (required for transcoding)")
-			os.Exit(1)
+			return fmt.Errorf("ffmpeg not found on PATH (required for transcoding)")
 		}
 	}
 
-	// HLS manager setup
-	var hlsMgr *HLSManager
-	if cfg.HLS.Enabled {
-		hlsMgr = NewHLSManager(cfg, absFile)
-	}
-
-	// One-shot HLS generation mode
-	if *precreateHLS {
-		if hlsMgr == nil {
-			hlsMgr = NewHLSManager(cfg, absFile)
+	// Scan for pre-compressed variants
+	variants := service.ScanVariants(absFile)
+	if len(variants) > 0 {
+		log.Printf("found %d variant(s) in .localsync/:", len(variants))
+		for _, v := range variants {
+			log.Printf("  %s (%s, %.1f MB)", v.Name, v.Filename, float64(v.Size)/(1024*1024))
 		}
-		if err := hlsMgr.GenerateAll(); err != nil {
-			fmt.Fprintf(os.Stderr, "HLS generation failed: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("HLS generation complete for all variants")
-		return
 	}
 
-	var hlsQualities []string
-	if hlsMgr != nil {
-		hlsQualities = hlsMgr.resolveQualityNames()
+	initialState := model.SessionState{
+		File:     filepath.Base(absFile),
+		Quality:  quality,
+		Pos:      0,
+		Paused:   false,
+		Variants: variants,
 	}
 
-	initialState := SessionState{
-		File:      filepath.Base(absFile),
-		Quality:   *quality,
-		Pos:       0,
-		Paused:    false,
-		HLSMode:   hlsMgr != nil && hlsMgr.HasCompleteCache(),
-		Qualities: hlsQualities,
-	}
-
-	hub := NewHub(initialState, cfg.MaxClients)
+	hub := service.NewHub(initialState, cfg.MaxClients)
 	go hub.Run()
 
-	// Background HLS auto-generation
-	if hlsMgr != nil && cfg.HLS.AutoGenerate {
-		go func() {
-			if err := hlsMgr.GenerateAll(); err != nil {
-				log.Printf("[hls] generation failed: %v", err)
-			} else {
-				hub.SetHLSReady(true, hlsQualities)
-				log.Println("[hls] all variants ready")
-			}
-		}()
-	}
+	// Start stats display
+	statsDone := make(chan struct{})
+	service.StartStatsDisplay(hub, 3*time.Second, statsDone)
 
-	http.HandleFunc("/stream", StreamHandler(cfg, absFile, hlsMgr))
-	http.HandleFunc("/ws", SyncHandler(hub))
-	if hlsMgr != nil {
-		http.HandleFunc("/hls/", hlsMgr.ServeHTTP)
-	}
+	// Build chi router
+	r := chi.NewRouter()
+	r.Get("/stream", handler.NewStreamHandler(toStreamConfig(cfg), absFile))
+	r.HandleFunc("/ws", handler.NewWSHandler(hub))
+	r.Get("/variant/{name}", handler.NewVariantHandler(absFile))
 
-	// Drain background update check (wait up to 2s)
+	// Drain background update check
 	select {
 	case info := <-updateCh:
 		if info != nil {
@@ -193,21 +137,52 @@ func main() {
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, *quality)
+	streamURL := fmt.Sprintf("http://0.0.0.0:%d/stream?quality=%s", cfg.Port, quality)
 	wsURL := fmt.Sprintf("ws://0.0.0.0:%d/ws", cfg.Port)
 
 	fmt.Printf("LocalSync %s running on %s\n", update.Version, addr)
 	fmt.Printf("Now playing: %s\n", absFile)
-	fmt.Printf("Quality:     %s\n", *quality)
+	fmt.Printf("Quality:     %s\n", quality)
 	fmt.Printf("Stream:      %s\n", streamURL)
 	fmt.Printf("Sync WS:     %s\n", wsURL)
 	fmt.Println()
 	fmt.Println("Waiting for client to connect...")
 
-	// Launch host MPV
-	go launchHostMPV(cfg.Port, *quality, absFile)
+	go launchHostMPV(cfg.Port, quality, absFile)
 
-	log.Fatal(http.ListenAndServe(addr, nil))
+	return http.ListenAndServe(addr, r)
+}
+
+func toStreamConfig(cfg Config) handler.StreamConfig {
+	sc := handler.StreamConfig{
+		Transcode: handler.TranscodeOpts{
+			VideoCodec:   cfg.Transcode.VideoCodec,
+			ExtraArgs:    cfg.Transcode.ExtraArgs,
+			AudioCodec:   cfg.Transcode.AudioCodec,
+			AudioBitrate: cfg.Transcode.AudioBitrate,
+			Subtitles:    cfg.Transcode.Subtitles,
+			Realtime:     cfg.Transcode.Realtime,
+			Format:       cfg.Transcode.Format,
+		},
+	}
+	for _, q := range cfg.Quality {
+		sc.Qualities = append(sc.Qualities, handler.QualityPreset{
+			Name:        q.Name,
+			Bitrate:     q.Bitrate,
+			Resolution:  q.Resolution,
+			Passthrough: q.Passthrough,
+			ExtraArgs:   q.ExtraArgs,
+		})
+	}
+	return sc
+}
+
+func defaultConfigPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "config.toml"
+	}
+	return filepath.Join(dir, "localsync", "config.toml")
 }
 
 func launchHostMPV(port int, quality string, filePath string) {
@@ -225,12 +200,7 @@ func launchHostMPV(port int, quality string, filePath string) {
 		return
 	}
 
-	// Launch syncclient in-process style via subprocess
 	wsURL := fmt.Sprintf("ws://localhost:%d/ws", port)
-	clientCmd := exec.Command(os.Args[0]+"_syncclient_not_used")
-	_ = clientCmd // syncclient is a separate binary; host uses direct WS
-
-	// Instead, run the syncclient binary if available, or just connect via WS
 	syncClient := exec.Command("syncclient",
 		"--server", wsURL,
 		"--ipc", ipcPath,

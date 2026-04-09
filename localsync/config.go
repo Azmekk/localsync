@@ -26,20 +26,11 @@ type QualityPreset struct {
 	ExtraArgs   []string `toml:"extra_args"`
 }
 
-type HLSConfig struct {
-	Enabled         bool     `toml:"enabled"`
-	SegmentDuration int      `toml:"segment_duration"`
-	AutoGenerate    bool     `toml:"auto_generate"`
-	Qualities       []string `toml:"qualities"`
-	SegmentType     string   `toml:"segment_type"`
-}
-
 type Config struct {
-	Port       int              `toml:"port"`
-	MaxClients int              `toml:"max_clients"`
-	Quality    []QualityPreset  `toml:"quality"`
-	Transcode  TranscodeConfig  `toml:"transcode"`
-	HLS        HLSConfig        `toml:"hls"`
+	Port       int             `toml:"port"`
+	MaxClients int             `toml:"max_clients"`
+	Quality    []QualityPreset `toml:"quality"`
+	Transcode  TranscodeConfig `toml:"transcode"`
 }
 
 func (c *Config) FindQuality(name string) *QualityPreset {
@@ -137,17 +128,9 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Transcode.Format = "matroska"
 	}
 
-	if cfg.HLS.SegmentDuration == 0 {
-		cfg.HLS.SegmentDuration = 4
-	}
-	if cfg.HLS.SegmentType == "" {
-		cfg.HLS.SegmentType = "mpegts"
-	}
-
 	return cfg, nil
 }
 
-// hasKey checks whether a TOML key is explicitly present in the raw data.
 func hasKey(data []byte, key string) bool {
 	var raw map[string]interface{}
 	if err := toml.Unmarshal(data, &raw); err != nil {
@@ -157,7 +140,6 @@ func hasKey(data []byte, key string) bool {
 	return ok
 }
 
-// hasTranscodeKey checks whether a key is explicitly set inside the [transcode] table.
 func hasTranscodeKey(data []byte, key string) bool {
 	var raw map[string]interface{}
 	if err := toml.Unmarshal(data, &raw); err != nil {
