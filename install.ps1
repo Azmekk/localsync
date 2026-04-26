@@ -8,8 +8,9 @@ $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/l
 
 $localsyncAsset = $release.assets | Where-Object { $_.name -eq "localsync-windows-amd64.exe" }
 $syncclientAsset = $release.assets | Where-Object { $_.name -eq "syncclient-windows-amd64.exe" }
+$batchcompressAsset = $release.assets | Where-Object { $_.name -eq "batchcompress-windows-amd64.exe" }
 
-if (-not $localsyncAsset -or -not $syncclientAsset) {
+if (-not $localsyncAsset -or -not $syncclientAsset -or -not $batchcompressAsset) {
     Write-Error "Could not find Windows release assets"
     exit 1
 }
@@ -26,6 +27,9 @@ Invoke-WebRequest -Uri $localsyncAsset.browser_download_url -OutFile "$installDi
 Write-Host "Downloading syncclient..."
 Invoke-WebRequest -Uri $syncclientAsset.browser_download_url -OutFile "$installDir\syncclient.exe"
 
+Write-Host "Downloading batchcompress..."
+Invoke-WebRequest -Uri $batchcompressAsset.browser_download_url -OutFile "$installDir\batchcompress.exe"
+
 # Add to user PATH if not already present
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$installDir*") {
@@ -35,7 +39,7 @@ if ($userPath -notlike "*$installDir*") {
 }
 
 Write-Host ""
-Write-Host "Installed localsync and syncclient to $installDir"
+Write-Host "Installed localsync, syncclient, and batchcompress to $installDir"
 
 # Check for optional dependencies
 if (-not (Get-Command mpv -ErrorAction SilentlyContinue)) {

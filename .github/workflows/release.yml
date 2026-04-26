@@ -45,12 +45,19 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -ldflags "-s -w -X localsync/shared/update.Version=${{ github.ref_name }}" -o syncclient-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./syncclient
 
+      - name: Build batchcompress
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -ldflags "-s -w -X localsync/shared/update.Version=${{ github.ref_name }}" -o batchcompress-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./batchcompress
+
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             localsync-*
             syncclient-*
+            batchcompress-*
 
   release:
     needs: build
@@ -67,3 +74,4 @@ jobs:
           files: |
             localsync-*
             syncclient-*
+            batchcompress-*

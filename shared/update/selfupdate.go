@@ -39,7 +39,7 @@ func SelfUpdate(callingBinary string) error {
 	}
 	binDir := filepath.Dir(selfPath)
 
-	binaries := []string{"localsync", "syncclient"}
+	binaries := []string{"localsync", "syncclient", "batchcompress"}
 	for _, binName := range binaries {
 		asset := findAsset(info, binName)
 		if asset == nil {

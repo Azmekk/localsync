@@ -35,8 +35,9 @@ RELEASE_JSON="$(curl -fsSL "$RELEASE_URL")"
 
 LOCALSYNC_URL="$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\": *\"[^\"]*localsync-${OS}-${ARCH}\"" | head -1 | cut -d'"' -f4)"
 SYNCCLIENT_URL="$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\": *\"[^\"]*syncclient-${OS}-${ARCH}\"" | head -1 | cut -d'"' -f4)"
+BATCHCOMPRESS_URL="$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\": *\"[^\"]*batchcompress-${OS}-${ARCH}\"" | head -1 | cut -d'"' -f4)"
 
-if [ -z "$LOCALSYNC_URL" ] || [ -z "$SYNCCLIENT_URL" ]; then
+if [ -z "$LOCALSYNC_URL" ] || [ -z "$SYNCCLIENT_URL" ] || [ -z "$BATCHCOMPRESS_URL" ]; then
     echo "Error: could not find release assets for ${OS}-${ARCH}"
     exit 1
 fi
@@ -70,13 +71,17 @@ curl -fsSL -o "${TMPDIR}/localsync" "$LOCALSYNC_URL"
 echo "Downloading syncclient..."
 curl -fsSL -o "${TMPDIR}/syncclient" "$SYNCCLIENT_URL"
 
-chmod +x "${TMPDIR}/localsync" "${TMPDIR}/syncclient"
+echo "Downloading batchcompress..."
+curl -fsSL -o "${TMPDIR}/batchcompress" "$BATCHCOMPRESS_URL"
+
+chmod +x "${TMPDIR}/localsync" "${TMPDIR}/syncclient" "${TMPDIR}/batchcompress"
 
 $NEED_SUDO mv "${TMPDIR}/localsync" "${INSTALL_DIR}/localsync"
 $NEED_SUDO mv "${TMPDIR}/syncclient" "${INSTALL_DIR}/syncclient"
+$NEED_SUDO mv "${TMPDIR}/batchcompress" "${INSTALL_DIR}/batchcompress"
 
 echo ""
-echo "Installed localsync and syncclient to ${INSTALL_DIR}"
+echo "Installed localsync, syncclient, and batchcompress to ${INSTALL_DIR}"
 
 # Check for optional dependencies
 if ! command -v mpv >/dev/null 2>&1; then

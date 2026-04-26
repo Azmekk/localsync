@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-)
 
-const version = "dev"
+	"localsync/shared/update"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "batchcompress",
@@ -32,6 +32,7 @@ func init() {
 	rootCmd.Flags().Bool("all", false, "select all discovered files, skip the picker")
 	rootCmd.Flags().BoolP("recursive", "r", false, "scan subdirectories")
 	rootCmd.Flags().BoolP("version", "v", false, "print version and exit")
+	rootCmd.Flags().BoolP("update", "u", false, "update to the latest release")
 }
 
 func main() {
@@ -42,8 +43,12 @@ func main() {
 
 func run(cmd *cobra.Command, _ []string) error {
 	if showVer, _ := cmd.Flags().GetBool("version"); showVer {
-		fmt.Println("batchcompress", version)
+		fmt.Println("batchcompress", update.Version)
 		return nil
+	}
+
+	if doUpdate, _ := cmd.Flags().GetBool("update"); doUpdate {
+		return update.SelfUpdate("batchcompress")
 	}
 
 	configPath, _ := cmd.Flags().GetString("config")
