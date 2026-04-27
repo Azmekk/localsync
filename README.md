@@ -207,6 +207,36 @@ syncclient --server ws://host:13771/ws --variant 720p_low
 
 Variant files are served via passthrough (no transcoding) with full seek support.
 
+### Batchcompress
+
+`batchcompress` is a sibling CLI that fills `.localsync/` folders by transcoding videos in bulk. Point it at a folder, pick which files to encode, leave it running overnight. Pause (`p`) genuinely freezes the ffmpeg process tree on Windows via `NtSuspendProcess`; skip (`s`) and quit (`q`) discard partial output. Logs go to `batchcompress.log` next to your config.
+
+```bash
+batchcompress --input /path/to/folder            # interactive picker
+batchcompress --input /path/to/folder --all -p 720p   # encode everything
+```
+
+By default `batchcompress` builds an ffmpeg command from `[batchcompress]` globals + a chosen `[[batchcompress.preset]]`. **If you want a fully predictable command, set `command` to an explicit ffmpeg argv** — when this is set, `video_codec`, `extra_args`, `audio_codec`, `audio_bitrate`, `subtitles`, and presets are all ignored. `{input}` is substituted with the source path; the output path is appended automatically. `-y` and `-progress pipe:1 -nostats` are auto-prepended only if absent so the dashboard still gets progress.
+
+```toml
+[batchcompress]
+command = [
+    "-i", "{input}",
+    "-map", "0:v", "-map", "0:a", "-map", "0:s?",
+    "-c:v", "libsvtav1",
+    "-preset", "6",
+    "-crf", "31",
+    "-pix_fmt", "yuv420p10le",
+    "-c:a", "libopus",
+    "-b:a", "96k",
+    "-ac", "2",
+    "-c:s", "copy",
+    "-f", "matroska",
+]
+```
+
+Output extension is derived from `-f <fmt>` in your command (e.g. `-f mp4` → `.mp4`). Files are written as `<source-stem>_<preset>.<ext>` inside the `.localsync/` folder next to each source.
+
 ### Bandwidth-Aware Pause
 
 When a client's buffer runs dry due to insufficient bandwidth, the host is automatically paused and notified with the client's download speed. The log message includes a recommended bitrate so you can adjust the quality preset. Once the client's buffer recovers, playback resumes automatically.
