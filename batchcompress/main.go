@@ -125,7 +125,16 @@ func run(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	ext := formatExtensions[tc.Format]
+	fmtName := tc.Format
+	if len(tc.Command) > 0 {
+		for i := 0; i+1 < len(tc.Command); i++ {
+			if tc.Command[i] == "-f" {
+				fmtName = tc.Command[i+1]
+				break
+			}
+		}
+	}
+	ext := formatExtensions[fmtName]
 	if ext == "" {
 		ext = "mkv"
 	}

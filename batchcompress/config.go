@@ -24,7 +24,12 @@ type BatchTranscode struct {
 	AudioBitrate string        `toml:"audio_bitrate"`
 	Subtitles    bool          `toml:"subtitles"`
 	Format       string        `toml:"format"`
-	Preset       []BatchPreset `toml:"preset"`
+	// Command, if non-empty, fully overrides the built command. {input} is
+	// substituted with the source path; the partial output path is appended as
+	// the final arg. video_codec / extra_args / audio_codec / audio_bitrate /
+	// subtitles / preset blocks are all ignored when this is set.
+	Command []string      `toml:"command"`
+	Preset  []BatchPreset `toml:"preset"`
 }
 
 func (c *BatchTranscode) FindPreset(name string) *BatchPreset {

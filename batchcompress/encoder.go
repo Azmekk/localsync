@@ -136,6 +136,9 @@ func (j *Job) partialPath() string {
 }
 
 func buildArgs(j *Job, outputPath string) []string {
+	if len(j.Tc.Command) > 0 {
+		return buildCustomArgs(j, outputPath)
+	}
 	args := []string{"-y", "-i", j.Source, "-map", "0:v", "-map", "0:a"}
 	if j.Tc.Subtitles {
 		args = append(args, "-map", "0:s?")
@@ -246,6 +249,30 @@ func (j *Job) Run(ctx context.Context, ctrl *Controller, progress chan<- Progres
 
 func containsFlag(args []string, flag string) bool {
 	return slices.Contains(args, flag)
+}
+
+// buildCustomArgs constructs the ffmpeg argv from a user-supplied template.
+// Substitutes {input} with the source path; appends outputPath as the last
+// arg. Prepends -y and -progress pipe:1 -nostats unless the template already
+// includes them.
+func buildCustomArgs(j *Job, outputPath string) []string {
+	tpl := j.Tc.Command
+	args := make([]string, 0, len(tpl)+5)
+	if !slices.Contains(tpl, "-y") {
+		args = append(args, "-y")
+	}
+	if !slices.Contains(tpl, "-progress") {
+		args = append(args, "-progress", "pipe:1", "-nostats")
+	}
+	for _, a := range tpl {
+		if a == "{input}" {
+			args = append(args, j.Source)
+		} else {
+			args = append(args, a)
+		}
+	}
+	args = append(args, outputPath)
+	return args
 }
 
 func parseProgress(r io.Reader, ch chan<- Progress) {
